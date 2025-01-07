@@ -67,7 +67,7 @@ class ASpaceDateFormatter:
         return sorted(start_dates)[0], sorted(end_dates)[-1]
 
     def format_aspace_date(self, start_date, end_date):
-        """Formats ASpace dates so that they can be parsed by Aquila.
+        """Formats ASpace dates so that they can be parsed. 
         Assumes beginning of month or year if a start date, and end of month or
         year if an end date.
 
@@ -154,7 +154,10 @@ def get_closest_date(obj_uri):
         raise
 
 def get_collection_id(obj_uri):
-    """Fetches the collection_id from an archival object URI in ArchivesSpace."""
+    """Fetches the collection_id from an archival object URI in ArchivesSpace.
+    I'm not sure how well this will handle atypical collection-ids like MS-UA collections or Corcoran.
+    May need to create a dictionary to match these to the desired output.
+    """
     try:
         # Fetch the metadata for the archival object using the URI
         obj_metadata = as_client.get(obj_uri).json()
@@ -209,11 +212,11 @@ def create_bag(bag_dir: Path, rights_ids: list):
             'Origin': 'digitization',
             'Rights-ID': '',
             'Collection-ID': collection_id,
-            'BagIt-Profile-Identifier': 'zorya_bagit_profile.json'
+            'BagIt-Profile-Identifier': 'scrc-digitization-profile.json'
         }
 
         # Create the BagIt bag
-        bagit.make_bag(bag_dir, metadata)
+        bagit.make_bag(bag_dir, metadata, checksum=['sha256'])
         logging.info(f'Bag created from {bag_dir} with Rights IDs {rights_ids}.')
 
         # Construct the S3 key
@@ -227,7 +230,9 @@ def create_bag(bag_dir: Path, rights_ids: list):
 
 def s3_key_construction(aws_bucket, refid, collection_id):
     """Constructs the S3 key for the given bucket, refid, and collection_id."""
-    s3_key = f"{collection_id}/{refid}"  # S3 key within the bucket
+    base_s3_path = config.get('base_s3_path', '')  # Fetch the base path from config
+    # Construct the S3 key
+    s3_key = os.path.join(base_s3_path, collection_id, refid).replace("\\", "/")
     return s3_key
 
 def transfer_to_s3(bag_dir: Path, s3_key: str):
@@ -235,17 +240,28 @@ def transfer_to_s3(bag_dir: Path, s3_key: str):
     try:
         aws_bucket = config['aws_bucket']
         
-        # Traverse the bag directory and upload each file to S3
         for root, _, files in os.walk(bag_dir):
             for file in files:
                 file_path = os.path.join(root, file)
-                s3_path = os.path.join(s3_key, os.path.relpath(file_path, bag_dir))
+
+                #clean s3 path
+                s3_path = os.path.join(s3_key, os.path.relpath(file_path, bag_dir)).replace("\\", "/")
                 
-                s3_client.upload_file(file_path, aws_bucket, s3_path)
-                logging.info(f'Uploaded {file_path} to s3://{aws_bucket}/{s3_path}.')
+                try:
+                    # Check if the file already exists in S3 by checking for metadata via HeadObject
+                    s3_client.head_object(Bucket=aws_bucket, Key=s3_path)
+                    logging.warning(f"File {s3_path} already exists in bucket {aws_bucket}. Skipping upload.")
+                except s3_client.exceptions.ClientError as e:
+                    if e.response['Error']['Code'] == '404':
+                        # File does not exist, proceed with upload
+                        s3_client.upload_file(file_path, aws_bucket, s3_path)
+                        logging.info(f'Uploaded {file_path} to s3://{aws_bucket}/{s3_path}.')
+                    else:
+                        # Unexpected error, re-raise
+                        raise
 
     except Exception as e:
-        logging.error(f"Error transferring {bag_dir} to S3: {str(e)}")
+        logging.error(f"Error transferring directory {bag_dir} to S3: {str(e)}")
 
 if __name__ == "__main__":
     input_directory = config['input_directory']
