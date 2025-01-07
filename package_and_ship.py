@@ -40,7 +40,12 @@ def init_aspace_client():
 as_client = init_aspace_client()
 
 # Initialize AWS S3 client
-s3_client = boto3.client('s3')
+s3_client = boto3.client(
+    's3',
+    aws_access_key_id=config['aws_access'],
+    aws_secret_access_key=config['aws_secret'],
+    region_name=config['aws_region']
+)
 
 class ASpaceDateFormatter:
     def __init__(self):
