@@ -181,6 +181,12 @@ def get_collection_id(obj_uri):
         logging.error(f"Error fetching collection_id for URI {obj_uri}: {str(e)}")
         raise
 
+def get_object_title(obj_uri):
+    obj_metadata = as_client.get(obj_uri).json()
+    print(obj_metadata)
+    object_title = obj_metadata.get('title')
+    return object_title
+
 def create_bag(bag_dir: Path, rights_ids: list):
     """Creates a BagIt bag from a directory and its metadata."""
     try:
@@ -204,6 +210,9 @@ def create_bag(bag_dir: Path, rights_ids: list):
         # Fetch the collection_id using the new function
         collection_id = get_collection_id(obj_uri)
 
+        #fetch ao title
+        object_title = get_object_title(obj_uri)
+
         # Default to empty rights IDs if none are provided
         if not rights_ids:
             logging.warning("No rights IDs provided. Defaulting to empty.")
@@ -211,6 +220,7 @@ def create_bag(bag_dir: Path, rights_ids: list):
 
         # Create metadata with the URI, closest date, and other required fields
         metadata = {
+            'Title:':object_title,
             'ArchivesSpace-URI': obj_uri,
             'Start-Date': formatted_start_date,
             'End-Date': formatted_end_date,
