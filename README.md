@@ -29,3 +29,18 @@ root_folder/
         ├── audio_file_1.mp3
         └── audio_file_1_caption_eng.vtt
  </pre>
+
+# Example Bag
+
+<pre>ArchivesSpace-URI: /repositories/2/archival_objects/582952
+Bag-Software-Agent: bagit.py v1.8.1 <https://github.com/LibraryOfCongress/bagit-python>
+BagIt-Profile-Identifier: scrc-digitization-profile.json
+Bagging-Date: 2025-01-28
+Collection-ID: ibt0084
+End-Date: 1962-12-31
+Origin: digitization
+Payload-Oxum: 4695087227.3
+Rights-ID: 
+Start-Date: 1962-01-01
+Title:: Congress Speaks at the 19th Convention: Senator McGee
+</pre>
