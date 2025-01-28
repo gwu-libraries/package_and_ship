@@ -1,5 +1,5 @@
 # Package and Ship
-Preparing and packaging digitized material for ingest into dig-col storage. 
+Packages and ingests digitized material into dig-col storage.
 
 * Bags content with relevant descrptive metadata retrieved from ArchivesSpace via the ArchivesSpace API
 * Places the content in the relevant "collection" level directory in dig-col storage
