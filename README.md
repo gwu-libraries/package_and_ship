@@ -1,11 +1,11 @@
 # Package and Ship
 Packages and ingests digitized material into dig-col storage.
 
-* Bags content with relevant descrptive metadata retrieved from ArchivesSpace via the ArchivesSpace API
+* Bags content with relevant descrptive metadata retrieved from ArchivesSpace via the ArchivesSpace API. Ideally, this is meant to represent 
 * Places the content in the relevant "collection" level directory in dig-col storage
 * Creates digital archival object records and links them to the relevant archival object record. The DAO records hold file versions that point to the content in dig-col storage (via cloudfront).
 
-# How to Use 
+# Structure of Files
 Each "object" must be placed in a directory that is titled with the ArchivesSpace refid of that object. Select the root directory in the config file; the script will run over every "ref-id" folder in the root directory. 
 
 <pre>
@@ -30,7 +30,9 @@ root_folder/
         └── audio_file_1_caption_eng.vtt
  </pre>
 
-# Example Bag
+# Example bag-info.txt
+
+Ideally, this bag-info file should contain enough information to satisfy [DACS'S Requirements for Single-level Descriptions.](https://saa-ts-dacs.github.io/dacs/06_part_I/02_chapter_01.html) At present, the hierarchical nature of our descriptive data and minimally described records pose some challenge related to fulfilling this requirement. Missing data, like creator, languages, and rights information, could be inferred by working up the hierarchy. However, this would likely lead to inaccurate or misrepresented data.
 
 <pre>ArchivesSpace-URI: /repositories/2/archival_objects/582952
 Bag-Software-Agent: bagit.py v1.8.1 <https://github.com/LibraryOfCongress/bagit-python>
