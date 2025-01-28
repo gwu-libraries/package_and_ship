@@ -1,7 +1,7 @@
 # Package and Ship
 Packages and ingests digitized material into dig-col storage.
 
-* Bags content with relevant descrptive metadata retrieved from ArchivesSpace via the ArchivesSpace API. Ideally, this is meant to represent 
+* Bags content with relevant descrptive metadata retrieved via the ArchivesSpace API. 
 * Places the content in the relevant "collection" level directory in dig-col storage
 * Creates digital archival object records and links them to the relevant archival object record. The DAO records hold file versions that point to the content in dig-col storage (via cloudfront).
 
