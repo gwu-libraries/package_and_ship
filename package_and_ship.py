@@ -8,9 +8,24 @@ from dateutil import parser
 from dateutil.relativedelta import relativedelta
 from user.config import config
 import boto3
+from datetime import datetime
 
 # Set up logging
-logging.basicConfig(level=logging.INFO)
+current_time=datetime.now().strftime("%Y-%m-%d_%H-%M")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.FileHandler(f"logs/package_ship_{current_time}.log", mode='a'),  
+        logging.StreamHandler()  # Log to console
+    ]
+)
+
+#setting global variables?
+successful_bags = 0
+failed_bags = 0
+successful_transfers = 0
+failed_transfers = 0
 
 # Initialize ArchivesSpace client
 def init_aspace_client():
@@ -182,6 +197,7 @@ def get_collection_id(obj_uri):
         raise
 
 def get_object_title(obj_uri):
+    
     obj_metadata = as_client.get(obj_uri).json()
     print(obj_metadata)
     object_title = obj_metadata.get('title')
@@ -189,38 +205,32 @@ def get_object_title(obj_uri):
 
 def create_bag(bag_dir: Path, rights_ids: list):
     """Creates a BagIt bag from a directory and its metadata."""
+    global successful_bags, failed_bags
     try:
         # Check if the directory exists and has files
         if not bag_dir.exists() or not any(bag_dir.iterdir()):
-            logging.error(f"The directory {bag_dir} is empty or doesn't exist.")
+            logging.error(f"FAILED: Directory {bag_dir} is empty or doesn't exist.")
+            failed_bags += 1
             return
-
+        
         # Fetch the URI from ArchivesSpace based on refid (folder name)
-        refid = bag_dir.name  # Assuming folder name is the refid
+        refid = bag_dir.name  
         obj_uri = uri_from_refid(refid)
-
-        # Fetch the metadata for the archival object using the URI
         obj_metadata = as_client.get(obj_uri).json()
         dates_array = obj_metadata.get('dates', [])
 
-        # Process the dates
+        # Process the dates and metadata
         aspace_date_formatter = ASpaceDateFormatter()
         formatted_start_date, formatted_end_date = aspace_date_formatter.process_dates(dates_array)
-
-        # Fetch the collection_id using the new function
         collection_id = get_collection_id(obj_uri)
-
-        #fetch ao title
         object_title = get_object_title(obj_uri)
 
         # Default to empty rights IDs if none are provided
         if not rights_ids:
-            logging.warning("No rights IDs provided. Defaulting to empty.")
             rights_ids = ['']
 
-        # Create metadata with the URI, closest date, and other required fields
         metadata = {
-            'Title:':object_title,
+            'Title': object_title,
             'ArchivesSpace-URI': obj_uri,
             'Start-Date': formatted_start_date,
             'End-Date': formatted_end_date,
@@ -230,18 +240,18 @@ def create_bag(bag_dir: Path, rights_ids: list):
             'BagIt-Profile-Identifier': 'scrc-digitization-profile.json'
         }
 
-        # Create the BagIt bag
+        # Create the Bag
         bagit.make_bag(bag_dir, metadata, checksum=['sha256'])
-        logging.info(f'Bag created from {bag_dir} with Rights IDs {rights_ids}.')
+        logging.info(f"SUCCESS: Created bag for {bag_dir} (RefID: {refid}).")
+        successful_bags += 1
 
-        # Construct the S3 key
+        # Construct key and transfer to S3
         s3_key = s3_key_construction(config['aws_bucket'], refid, collection_id)
-
-        # Transfer the bag to S3
         transfer_to_s3(bag_dir, s3_key)
 
     except Exception as e:
-        logging.error(f"Error creating bag for {bag_dir}: {str(e)}")
+        logging.error(f"FAILED: Error creating bag for {bag_dir}: {str(e)}")
+        failed_bags += 1
 
 def s3_key_construction(aws_bucket, refid, collection_id):
     """Constructs the S3 key for the given bucket, refid, and collection_id."""
@@ -251,32 +261,41 @@ def s3_key_construction(aws_bucket, refid, collection_id):
     return s3_key
 
 def transfer_to_s3(bag_dir: Path, s3_key: str):
-    """Transfers the created bag to the specified S3 location."""
+    """Transfers bag to S3 and logs success or failure."""
+    global successful_transfers, failed_transfers
     try:
         aws_bucket = config['aws_bucket']
+        uploaded_files = 0  # Track successful uploads
         
         for root, _, files in os.walk(bag_dir):
             for file in files:
                 file_path = os.path.join(root, file)
-
+                
                 #clean s3 path
                 s3_path = os.path.join(s3_key, os.path.relpath(file_path, bag_dir)).replace("\\", "/")
                 
                 try:
                     # Check if the file already exists in S3 by checking for metadata via HeadObject
                     s3_client.head_object(Bucket=aws_bucket, Key=s3_path)
-                    logging.warning(f"File {s3_path} already exists in bucket {aws_bucket}. Skipping upload.")
+                    logging.warning(f"SKIPPED: {s3_path} already exists in {aws_bucket}.")
                 except s3_client.exceptions.ClientError as e:
                     if e.response['Error']['Code'] == '404':
-                        # File does not exist, proceed with upload
+                        # Upload new file (if fiel does not exist)
                         s3_client.upload_file(file_path, aws_bucket, s3_path)
-                        logging.info(f'Uploaded {file_path} to s3://{aws_bucket}/{s3_path}.')
+                        logging.info(f"UPLOADED: {file_path} -> s3://{aws_bucket}/{s3_path}")
+                        uploaded_files += 1
                     else:
-                        # Unexpected error, re-raise
                         raise
 
+        if uploaded_files > 0:
+            logging.info(f"SUCCESS: Transferred {uploaded_files} files from {bag_dir} to S3.")
+            successful_transfers += 1
+        else:
+            logging.warning(f"SKIPPED: No new files to transfer for {bag_dir}.")
+
     except Exception as e:
-        logging.error(f"Error transferring directory {bag_dir} to S3: {str(e)}")
+        logging.error(f"FAILED: Error transferring {bag_dir} to S3: {str(e)}")
+        failed_transfers += 1
 
 if __name__ == "__main__":
     input_directory = config['input_directory']
@@ -286,6 +305,8 @@ if __name__ == "__main__":
     refids = get_refids(input_directory)
 
     for refid in refids:
-        # Create a BagIt bag for each refid
         bag_dir = Path(input_directory) / refid
         create_bag(bag_dir, rights_ids)
+
+    logging.info(f"SUMMARY: {successful_bags} bags created, {failed_bags} failed.")
+    logging.info(f"SUMMARY: {successful_transfers} transfers successful, {failed_transfers} failed.")

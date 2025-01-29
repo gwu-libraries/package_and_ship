@@ -32,7 +32,7 @@ root_folder/
 
 # Example bag-info.txt
 
-Ideally, this bag-info file should contain enough information to satisfy [DACS'S Requirements for Single-level Descriptions.](https://saa-ts-dacs.github.io/dacs/06_part_I/02_chapter_01.html) At present, the hierarchical nature of our descriptive data and minimally described records pose some challenge related to fulfilling this requirement. Missing data, like creator, languages, and rights information, could be inferred by working up the hierarchy. However, this would likely lead to inaccurate or misrepresented data.
+Ideally, this bag-info file should contain enough information to satisfy [DACS Requirements for Single-level Descriptions.](https://saa-ts-dacs.github.io/dacs/06_part_I/02_chapter_01.html) At present, the hierarchical nature of our descriptive data and minimally described records pose some challenge related to fulfilling this requirement. Missing data, like creator, languages, and rights information, could be inferred by working up the hierarchy. However, this would likely lead to inaccurate or misrepresented data.
 
 <pre>ArchivesSpace-URI: /repositories/2/archival_objects/582952
 Bag-Software-Agent: bagit.py v1.8.1 <https://github.com/LibraryOfCongress/bagit-python>
@@ -44,5 +44,5 @@ Origin: digitization
 Payload-Oxum: 4695087227.3
 Rights-ID: 
 Start-Date: 1962-01-01
-Title:: Congress Speaks at the 19th Convention: Senator McGee
+Title: Congress Speaks at the 19th Convention: Senator McGee
 </pre>
