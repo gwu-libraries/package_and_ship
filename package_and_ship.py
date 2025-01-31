@@ -7,10 +7,26 @@ from asnake.utils import find_closest_value
 from dateutil import parser
 from dateutil.relativedelta import relativedelta
 from user.config import config
+from datetime import datetime
 import boto3
 
+
 # Set up logging
-logging.basicConfig(level=logging.INFO)
+current_time=datetime.now().strftime("%Y-%m-%d_%H-%M")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.FileHandler(f"logs/package_ship_{current_time}.log", mode='a'),  
+        logging.StreamHandler() 
+    ]
+)
+
+#log counters global variables
+successful_uploads = 0
+failed_uploads = 0
+successful_bags = 0
+failed_bags = 0
 
 # Initialize ArchivesSpace client
 def init_aspace_client():
@@ -152,8 +168,6 @@ class aspaceOperations:
             if collection_uri:
                 collection_json = as_client.get(collection_uri).json()
                 collection_id = collection_json.get('id_0', '').lower()  # Convert to lowercase
-
-            logging.info(f"Found collection ID: {collection_id} for URI: {obj_uri}")
             return collection_id
 
         except Exception as e:
@@ -216,7 +230,12 @@ class aspaceOperations:
 class S3handler:
     def transfer_to_s3(bag_dir: Path, s3_key: str):
         """Transfers the created bag to the specified S3 location."""
+        global successful_uploads, failed_uploads
+        aws_bucket = config['aws_bucket']
+        logging.info(f"Starting S3 transfer for directory: {bag_dir} to {aws_bucket}/{s3_key}")
         try:
+            #flag to track upload
+            upload_failed = False
             aws_bucket = config['aws_bucket']
             for root, _, files in os.walk(bag_dir):
                 for file in files:
@@ -233,10 +252,20 @@ class S3handler:
                             s3_client.upload_file(file_path, aws_bucket, s3_path)
                             logging.info(f'Uploaded {file_path} to s3://{aws_bucket}/{s3_path}.')
                         else:
-                            # Unexpected error, re-raise
+                            logging.exception(f"Unexpected error during upload of {file_path}")
+                            upload_failed = True
                             raise
+                # If any failure happened during the transfer process, log the failure for the whole directory
+            if upload_failed:
+                logging.error(f"Failed to transfer some or all files in {bag_dir} to S3.")
+                failed_uploads += 1
+            else:
+                logging.info(f"Successfully transferred entire bag directory {bag_dir} to S3.")
+                successful_uploads += 1
+
         except Exception as e:
-            logging.error(f"Error transferring directory {bag_dir} to S3: {str(e)}")
+            logging.exception(f"Error transferring directory {bag_dir} to S3: {e}")
+            failed_uploads += 1
 
     def s3_key_construction(aws_bucket, refid, collection_id):
         """Constructs the S3 key for the given bucket, refid, and collection_id."""
@@ -265,12 +294,14 @@ def get_refids(input_directory):
             refids.append(folder)  # Assuming folder name is the refid
     return refids
 
-def create_bag(bag_dir: Path, rights_ids: list):
+def create_bag_and_upload(bag_dir: Path, rights_ids: list):
     """Creates a BagIt bag from a directory and its metadata."""
+    global successful_bags, failed_bags
     try:
         # Check if the directory exists and has files
         if not bag_dir.exists() or not any(bag_dir.iterdir()):
             logging.error(f"The directory {bag_dir} is empty or doesn't exist.")
+            failed_bags += 1
             return
 
         # Fetch the URI from ArchivesSpace based on refid (folder name)
@@ -309,7 +340,8 @@ def create_bag(bag_dir: Path, rights_ids: list):
 
         # Create the BagIt bag
         bagit.make_bag(bag_dir, metadata, checksum=['sha256'])
-        logging.info(f'Bag created from {bag_dir} with Rights IDs {rights_ids}.')
+        logging.info(f'Bag created from {bag_dir}.')
+        successful_bags += 1
 
         # Construct the S3 key
         s3_key = S3handler.s3_key_construction(config['aws_bucket'], refid, collection_id)
@@ -321,7 +353,8 @@ def create_bag(bag_dir: Path, rights_ids: list):
         return s3_key
 
     except Exception as e:
-        logging.error(f"Error creating bag for {bag_dir}: {str(e)}")
+        logging.exception(f"Error creating bag for {bag_dir}: {str(e)}")
+        failed_bags += 1
 
 if __name__ == "__main__":
     input_directory = config['input_directory']
@@ -335,10 +368,16 @@ if __name__ == "__main__":
 
     for refid in refids:
         try:
-            print(f"starting {refid}")
+            logging.info(f"starting {refid}")
             bag_dir = Path(input_directory) / refid
-            s3_key = create_bag(bag_dir, rights_ids)
+            s3_key = create_bag_and_upload(bag_dir, rights_ids)
+            #if the create_bag_and_upload doesn't return a s3 key, then we don't need to advance further with the workflow
+            if s3_key is None:
+                break
             file_uri = S3handler.construct_s3_cloudfront_URI(s3_key)
             aspace_ops.create_preservation_dao(file_uri,refid)
         except Exception as e:
-            print(f"Error processing {refid}: {e}")
+            logging.error(f"Error processing {refid}: {e}")
+
+logging.info(f"Summary: {successful_uploads} successful uploads, {failed_uploads} failed uploads.")
+logging.info(f"Summary: {successful_bags} successful bags, {failed_bags} failed bags.")
