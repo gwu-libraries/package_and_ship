@@ -7,8 +7,10 @@ from asnake.utils import find_closest_value
 from dateutil import parser
 from dateutil.relativedelta import relativedelta
 from user.config import config
+from datetime import datetime
 import boto3
 from datetime import datetime
+
 
 # Set up logging
 current_time=datetime.now().strftime("%Y-%m-%d_%H-%M")
@@ -17,15 +19,15 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[
         logging.FileHandler(f"logs/package_ship_{current_time}.log", mode='a'),  
-        logging.StreamHandler()  # Log to console
+        logging.StreamHandler() 
     ]
 )
 
-#setting global variables?
+#log counters global variables
+successful_uploads = 0
+failed_uploads = 0
 successful_bags = 0
 failed_bags = 0
-successful_transfers = 0
-failed_transfers = 0
 
 # Initialize ArchivesSpace client
 def init_aspace_client():
@@ -127,25 +129,162 @@ class ASpaceDateFormatter:
         start_date, end_date = self.get_date_range(dates_array)
         formatted_start_date, formatted_end_date = self.format_aspace_date(start_date, end_date)
         return formatted_start_date, formatted_end_date
-
-def uri_from_refid(refid):
-    """Fetch the URI of an archival object from ArchivesSpace by its ref_id."""
-    try:
-        # Use dictionary-style access to get the aspace_repo value from the config
-        find_by_refid_url = f"repositories/{config['aspace_repo']}/find_by_id/archival_objects?ref_id[]={refid}"
-        response = as_client.get(find_by_refid_url)
-        response.raise_for_status()
-        results = response.json()
-        
-        # Check if exactly one result is returned
-        if len(results.get("archival_objects")) == 1:
-            return results['archival_objects'][0]['ref']
-        else:
-            raise Exception(f"{len(results.get('archival_objects'))} results found for search {find_by_refid_url}. Expected one result.")
     
-    except Exception as e:
-        logging.error(f"Error fetching URI for refid {refid}: {str(e)}")
-        raise
+class aspaceOperations:
+    def uri_from_refid(self, refid):
+        """Fetch the URI of an archival object from ArchivesSpace by its ref_id."""
+        try:
+            find_by_refid_url = f"repositories/{config['aspace_repo']}/find_by_id/archival_objects?ref_id[]={refid}"
+            response = as_client.get(find_by_refid_url)
+            response.raise_for_status()
+            results = response.json()
+            
+            # Check if exactly one result is returned
+            if len(results.get("archival_objects")) == 1:
+                return results['archival_objects'][0]['ref']
+            else:
+                raise Exception(f"{len(results.get('archival_objects'))} results found for search {find_by_refid_url}. Expected one result.")
+        
+        except Exception as e:
+            logging.error(f"Error fetching URI for refid {refid}: {str(e)}")
+            raise
+
+    def get_ao_title(self, obj_uri):
+        """"fetch the title (not the complete display string) of an AO via its refid"""
+        obj_metadata = as_client.get(obj_uri).json()
+        print(obj_metadata)
+        object_title = obj_metadata.get('title')
+        return object_title #AOs must have titles, so not sure if I need to catch errors
+
+    def get_collection_id(self, obj_uri):
+        """Fetches the collection_id from an archival object URI in ArchivesSpace."""
+        try:
+            # Fetch the metadata for the archival object using the URI
+            obj_metadata = as_client.get(obj_uri).json()
+
+            # Extract the collection_id from the resource metadata (if it exists)
+            collection_resource = obj_metadata.get('resource', {})
+            collection_uri = collection_resource.get('ref', '')
+            collection_id = ''
+            if collection_uri:
+                collection_json = as_client.get(collection_uri).json()
+                collection_id = collection_json.get('id_0', '').lower()  # Convert to lowercase
+            return collection_id
+
+        except Exception as e:
+            logging.error(f"Error fetching collection_id for URI {obj_uri}: {str(e)}")
+            raise
+
+    def create_preservation_dao(self, file_uri, refid):
+        # Fetch the archival object URI
+        obj_uri = self.uri_from_refid(refid)
+        ao_record = as_client.get(obj_uri).json()
+        
+        # Check for existing DAO records
+        existing_digital_object_IDs = [
+            as_client.get(instance['digital_object']['ref']).json()['digital_object_id']
+            for instance in ao_record["instances"]
+            if instance["instance_type"] == "digital_object"
+        ]
+        
+        # Generate a new digital object ID
+        new_digital_object_id = refid
+
+        # Ensure the digital object ID is unique
+        while new_digital_object_id in existing_digital_object_IDs:
+            # Try to make the new_do_id unique by appending _presCopy.
+            new_digital_object_id = f"{new_digital_object_id}_presCopy"
+            logging.info(f"Digital object ID {new_digital_object_id} already exists. Attempting new ID.")
+
+        file_publish = False  # Do not publish CloudFront links
+        file_version = {'file_uri': file_uri, 'publish': file_publish}
+
+        dao_data = {
+            "jsonmodel_type": "digital_object",
+            "publish": True,  # Publish the DAO, but not the file_version
+            "title": f"Preservation Copy: {ao_record['display_string']}",  # Using the title of the AO as the basis for the DAO title
+            "digital_object_id": new_digital_object_id,  # Use the unique ID for the DAO
+            "file_versions": [file_version]
+        }
+
+        # Post the new DAO record
+        try:
+            dao_response = as_client.post(f"repositories/{config['aspace_repo']}/digital_objects", json=dao_data).json()
+            dao_ref = dao_response["uri"]
+            logging.info(f"Created new DAO: {dao_ref}")
+        except Exception as e:
+            logging.error(f"Error creating DAO: {str(e)}")
+            return
+
+        # Link the new DAO record to the AO
+        try:
+            instances = ao_record.get("instances", [])  # Safely get instances
+            instances.append({"instance_type": "digital_object", "digital_object": {"ref": dao_ref}})
+            ao_record["instances"] = instances  # Update instances
+            as_client.post(obj_uri, json=ao_record)  # Post the updated AO
+            logging.info(f"Linked new DAO {dao_ref} to AO {obj_uri}")
+        except Exception as e:
+            logging.error(f"Error updating AO with new instance: {str(e)}")
+            return
+        return dao_data
+
+class S3handler:
+    def transfer_to_s3(bag_dir: Path, s3_key: str):
+        """Transfers the created bag to the specified S3 location."""
+        global successful_uploads, failed_uploads
+        aws_bucket = config['aws_bucket']
+        logging.info(f"Starting S3 transfer for directory: {bag_dir} to {aws_bucket}/{s3_key}")
+        try:
+            #flag to track upload
+            upload_failed = False
+            aws_bucket = config['aws_bucket']
+            for root, _, files in os.walk(bag_dir):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    #clean s3 path
+                    s3_path = os.path.join(s3_key, os.path.relpath(file_path, bag_dir)).replace("\\", "/")
+                    try:
+                        # Check if the file already exists in S3 by checking for metadata via HeadObject
+                        s3_client.head_object(Bucket=aws_bucket, Key=s3_path)
+                        logging.warning(f"File {s3_path} already exists in bucket {aws_bucket}. Skipping upload.")
+                    except s3_client.exceptions.ClientError as e:
+                        if e.response['Error']['Code'] == '404':
+                            # File does not exist, proceed with upload
+                            s3_client.upload_file(file_path, aws_bucket, s3_path)
+                            logging.info(f'Uploaded {file_path} to s3://{aws_bucket}/{s3_path}.')
+                        else:
+                            logging.exception(f"Unexpected error during upload of {file_path}")
+                            upload_failed = True
+                            raise
+                # If any failure happened during the transfer process, log the failure for the whole directory
+            if upload_failed:
+                logging.error(f"Failed to transfer some or all files in {bag_dir} to S3.")
+                failed_uploads += 1
+            else:
+                logging.info(f"Successfully transferred entire bag directory {bag_dir} to S3.")
+                successful_uploads += 1
+
+        except Exception as e:
+            logging.exception(f"Error transferring directory {bag_dir} to S3: {e}")
+            failed_uploads += 1
+
+    def s3_key_construction(aws_bucket, refid, collection_id):
+        """Constructs the S3 key for the given bucket, refid, and collection_id."""
+        base_s3_path = config.get('base_s3_path', '')  # Fetch the base path from config
+        # Construct the S3 key
+        s3_key = os.path.join(base_s3_path, collection_id, refid).replace("\\", "/")
+        return s3_key
+    
+    def construct_s3_cloudfront_URI(s3_path):
+        '''
+        Takes an S3 prefix (the S3 key without the bucket name) and returns a CloudFront URI. 
+        '''
+        folder_prefix = "inventory.html?folder="
+        cloudfront_base_uri = config.get('cloudfront_base_URI')
+
+        cloudfront_URI = cloudfront_base_uri + folder_prefix + s3_path
+
+        return cloudfront_URI
 
 def get_refids(input_directory):
     """Fetch the refids (folder names) from the given directory."""
@@ -156,83 +295,41 @@ def get_refids(input_directory):
             refids.append(folder)  # Assuming folder name is the refid
     return refids
 
-def get_closest_date(obj_uri):
-    """Fetch the closest date associated with an archival object."""
-    try:
-        # Use find_closest_value to extract the closest match for dates
-        closest_date = find_closest_value(obj_uri, 'dates', as_client)
-
-        if closest_date:
-            logging.info(f"Found closest date for URI {obj_uri}: {closest_date}")
-            return closest_date
-        else:
-            logging.warning(f"No date found for URI {obj_uri}.")
-            return None
-
-    except Exception as e:
-        logging.error(f"Error fetching closest date for URI {obj_uri}: {str(e)}")
-        raise
-
-def get_collection_id(obj_uri):
-    """Fetches the collection_id from an archival object URI in ArchivesSpace.
-    I'm not sure how well this will handle atypical collection-ids like MS-UA collections or Corcoran.
-    May need to create a dictionary to match these to the desired output.
-    """
-    try:
-        # Fetch the metadata for the archival object using the URI
-        obj_metadata = as_client.get(obj_uri).json()
-
-        # Extract the collection_id from the resource metadata (if it exists)
-        collection_resource = obj_metadata.get('resource', {})
-        collection_uri = collection_resource.get('ref', '')
-        collection_id = ''
-        if collection_uri:
-            collection_json = as_client.get(collection_uri).json()
-            collection_id = collection_json.get('id_0', '').lower()  # Convert to lowercase
-
-        return collection_id
-
-    except Exception as e:
-        logging.error(f"Error fetching collection_id for URI {obj_uri}: {str(e)}")
-        raise
-
-def get_object_title(obj_uri):
-    
-    obj_metadata = as_client.get(obj_uri).json()
-    print(obj_metadata)
-    object_title = obj_metadata.get('title')
-    return object_title
-
-def create_bag(bag_dir: Path, rights_ids: list):
+def create_bag_and_upload(bag_dir: Path, rights_ids: list):
     """Creates a BagIt bag from a directory and its metadata."""
     global successful_bags, failed_bags
     try:
         # Check if the directory exists and has files
         if not bag_dir.exists() or not any(bag_dir.iterdir()):
-            logging.error(f"FAILED: Directory {bag_dir} is empty or doesn't exist.")
+            logging.error(f"The directory {bag_dir} is empty or doesn't exist.")
             failed_bags += 1
             return
         
         # Fetch the URI from ArchivesSpace based on refid (folder name)
-        refid = bag_dir.name  
-        obj_uri = uri_from_refid(refid)
-        obj_metadata = as_client.get(obj_uri).json()
-        dates_array = obj_metadata.get('dates', [])
+        refid = bag_dir.name  # Assuming folder name is the refid
+        obj_uri = aspace_ops.uri_from_refid(refid)
+
+        # Fetch the dates closest to the record (move up the archival description tree until it finds a record with a date).
+        dates_array = find_closest_value(obj_uri,'dates',as_client)
 
         # Process the dates and metadata
         aspace_date_formatter = ASpaceDateFormatter()
         formatted_start_date, formatted_end_date = aspace_date_formatter.process_dates(dates_array)
-        collection_id = get_collection_id(obj_uri)
-        object_title = get_object_title(obj_uri)
+
+        # Fetch the collection_id
+        collection_id = aspace_ops.get_collection_id(obj_uri)
+
+        # Fetch the AO title
+        object_title = aspace_ops.get_ao_title(obj_uri)
 
         # Default to empty rights IDs if none are provided
         if not rights_ids:
             rights_ids = ['']
 
         metadata = {
-            'Title': object_title,
             'ArchivesSpace-URI': obj_uri,
             'Start-Date': formatted_start_date,
+            'Title': object_title,
             'End-Date': formatted_end_date,
             'Origin': 'digitization',
             'Rights-ID': '',
@@ -242,60 +339,21 @@ def create_bag(bag_dir: Path, rights_ids: list):
 
         # Create the Bag
         bagit.make_bag(bag_dir, metadata, checksum=['sha256'])
-        logging.info(f"SUCCESS: Created bag for {bag_dir} (RefID: {refid}).")
+        logging.info(f'Bag created from {bag_dir}.')
         successful_bags += 1
 
-        # Construct key and transfer to S3
-        s3_key = s3_key_construction(config['aws_bucket'], refid, collection_id)
-        transfer_to_s3(bag_dir, s3_key)
+        # Construct the S3 key
+        s3_key = S3handler.s3_key_construction(config['aws_bucket'], refid, collection_id)
+
+        # Transfer the bag to S3
+        S3handler.transfer_to_s3(bag_dir, s3_key)
+
+        #return the s3_key for use in DAO record creation
+        return s3_key
 
     except Exception as e:
-        logging.error(f"FAILED: Error creating bag for {bag_dir}: {str(e)}")
+        logging.exception(f"Error creating bag for {bag_dir}: {str(e)}")
         failed_bags += 1
-
-def s3_key_construction(aws_bucket, refid, collection_id):
-    """Constructs the S3 key for the given bucket, refid, and collection_id."""
-    base_s3_path = config.get('base_s3_path', '')  # Fetch the base path from config
-    # Construct the S3 key
-    s3_key = os.path.join(base_s3_path, collection_id, refid).replace("\\", "/")
-    return s3_key
-
-def transfer_to_s3(bag_dir: Path, s3_key: str):
-    """Transfers bag to S3 and logs success or failure."""
-    global successful_transfers, failed_transfers
-    try:
-        aws_bucket = config['aws_bucket']
-        uploaded_files = 0  # Track successful uploads
-        
-        for root, _, files in os.walk(bag_dir):
-            for file in files:
-                file_path = os.path.join(root, file)
-                
-                #clean s3 path
-                s3_path = os.path.join(s3_key, os.path.relpath(file_path, bag_dir)).replace("\\", "/")
-                
-                try:
-                    # Check if the file already exists in S3 by checking for metadata via HeadObject
-                    s3_client.head_object(Bucket=aws_bucket, Key=s3_path)
-                    logging.warning(f"SKIPPED: {s3_path} already exists in {aws_bucket}.")
-                except s3_client.exceptions.ClientError as e:
-                    if e.response['Error']['Code'] == '404':
-                        # Upload new file (if fiel does not exist)
-                        s3_client.upload_file(file_path, aws_bucket, s3_path)
-                        logging.info(f"UPLOADED: {file_path} -> s3://{aws_bucket}/{s3_path}")
-                        uploaded_files += 1
-                    else:
-                        raise
-
-        if uploaded_files > 0:
-            logging.info(f"SUCCESS: Transferred {uploaded_files} files from {bag_dir} to S3.")
-            successful_transfers += 1
-        else:
-            logging.warning(f"SKIPPED: No new files to transfer for {bag_dir}.")
-
-    except Exception as e:
-        logging.error(f"FAILED: Error transferring {bag_dir} to S3: {str(e)}")
-        failed_transfers += 1
 
 if __name__ == "__main__":
     input_directory = config['input_directory']
@@ -304,9 +362,21 @@ if __name__ == "__main__":
     # Fetch all refids (folder names) from the input directory
     refids = get_refids(input_directory)
 
-    for refid in refids:
-        bag_dir = Path(input_directory) / refid
-        create_bag(bag_dir, rights_ids)
+    # Create an instance of the aspaceOperations class
+    aspace_ops = aspaceOperations()
 
-    logging.info(f"SUMMARY: {successful_bags} bags created, {failed_bags} failed.")
-    logging.info(f"SUMMARY: {successful_transfers} transfers successful, {failed_transfers} failed.")
+    for refid in refids:
+        try:
+            logging.info(f"starting {refid}")
+            bag_dir = Path(input_directory) / refid
+            s3_key = create_bag_and_upload(bag_dir, rights_ids)
+            #if the create_bag_and_upload doesn't return a s3 key, then we don't need to advance further with the workflow
+            if s3_key is None:
+                break
+            file_uri = S3handler.construct_s3_cloudfront_URI(s3_key)
+            aspace_ops.create_preservation_dao(file_uri,refid)
+        except Exception as e:
+            logging.error(f"Error processing {refid}: {e}")
+
+logging.info(f"Summary: {successful_uploads} successful uploads, {failed_uploads} failed uploads.")
+logging.info(f"Summary: {successful_bags} successful bags, {failed_bags} failed bags.")
