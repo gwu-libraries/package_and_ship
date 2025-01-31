@@ -132,11 +132,12 @@ class aspaceOperations:
             logging.error(f"Error fetching URI for refid {refid}: {str(e)}")
             raise
 
-    def get_object_title(obj_uri):
+    def get_ao_title(self, obj_uri):
+        """"fetch the title (not the complete display string) of an AO via its refid"""
         obj_metadata = as_client.get(obj_uri).json()
         print(obj_metadata)
         object_title = obj_metadata.get('title')
-        return object_title
+        return object_title #AOs must have titles, so not sure if I need to catch errors
 
     def get_collection_id(self, obj_uri):
         """Fetches the collection_id from an archival object URI in ArchivesSpace."""
@@ -274,7 +275,7 @@ def create_bag(bag_dir: Path, rights_ids: list):
 
         # Fetch the URI from ArchivesSpace based on refid (folder name)
         refid = bag_dir.name  # Assuming folder name is the refid
-        obj_uri = aspaceOperations.uri_from_refid(refid)
+        obj_uri = aspace_ops.uri_from_refid(refid)
 
         # Fetch the dates closest to the record (move up the archival description tree until it finds a record with a date).
         dates_array = find_closest_value(obj_uri,'dates',as_client)
@@ -283,11 +284,11 @@ def create_bag(bag_dir: Path, rights_ids: list):
         aspace_date_formatter = ASpaceDateFormatter()
         formatted_start_date, formatted_end_date = aspace_date_formatter.process_dates(dates_array)
 
-        # Fetch the collection_id 
-        collection_id = aspaceOperations.get_collection_id(obj_uri)
+        # Fetch the collection_id
+        collection_id = aspace_ops.get_collection_id(obj_uri)
 
-        #Fetch AO title
-        title = aspaceOperations.get_object_title(obj_uri)
+        # Fetch the AO title
+        object_title = aspace_ops.get_ao_title(obj_uri)
 
         # Default to empty rights IDs if none are provided
         if not rights_ids:
@@ -298,12 +299,12 @@ def create_bag(bag_dir: Path, rights_ids: list):
         metadata = {
             'ArchivesSpace-URI': obj_uri,
             'Start-Date': formatted_start_date,
+            'Title': object_title,
             'End-Date': formatted_end_date,
             'Origin': 'digitization',
             'Rights-ID': '',
             'Collection-ID': collection_id,
-            'BagIt-Profile-Identifier': 'scrc-digitization-profile.json',
-            'title': title
+            'BagIt-Profile-Identifier': 'scrc-digitization-profile.json'
         }
 
         # Create the BagIt bag
@@ -333,12 +334,11 @@ if __name__ == "__main__":
     aspace_ops = aspaceOperations()
 
     for refid in refids:
-        print(f"starting {refid}")
-        # For each refid, create a BagIt bag or process files
-        bag_dir = Path(input_directory) / refid
-        s3_key = create_bag(bag_dir, rights_ids)
-
-        file_uri = S3handler.construct_s3_cloudfront_URI(s3_key)
-
-        # Call the create_preservation_dao method
-        aspace_ops.create_preservation_dao(file_uri,refid)
+        try:
+            print(f"starting {refid}")
+            bag_dir = Path(input_directory) / refid
+            s3_key = create_bag(bag_dir, rights_ids)
+            file_uri = S3handler.construct_s3_cloudfront_URI(s3_key)
+            aspace_ops.create_preservation_dao(file_uri,refid)
+        except Exception as e:
+            print(f"Error processing {refid}: {e}")
