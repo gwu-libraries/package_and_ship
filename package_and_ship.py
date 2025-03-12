@@ -53,7 +53,7 @@ def init_aspace_client():
         logging.error(f"Error initializing ArchivesSpace client: {str(e)}")
         raise
 
-# Initialize the client
+# Initialize the aspace client
 as_client = init_aspace_client()
 
 # Initialize AWS S3 client
@@ -80,13 +80,36 @@ class ASpaceDateFormatter:
         """
         start_dates = []
         end_dates = []
+
         for date in dates_array:
-            start_dates.append(date['begin'])
+            # Ensure that 'begin' and 'end' are present and valid
+            begin_date = date.get('begin')
+            end_date = date.get('end')
+
+            # Skip if 'begin' is missing or invalid
+            if not begin_date or begin_date.lower() == 'undated':
+                continue  # Skip this entry if there's no valid start date
+
+            # Add 'begin' date to start_dates list
+            start_dates.append(begin_date)
+
+            # If it's a 'single' date type, use 'begin' for both start and end
             if date['date_type'] == 'single':
-                end_dates.append(date['begin'])
-            else:
-                end_dates.append(date['end'])
+                end_dates.append(begin_date)
+            elif end_date:  # Otherwise, use 'end' if it's provided
+                end_dates.append(end_date)
+            else:  # If no 'end' is provided, assume 'begin' as 'end'
+                end_dates.append(begin_date)
+
+        # Check if there are valid start and end dates
+        if not start_dates or not end_dates:
+            logging.warning("No valid start or end dates found.")
+            return None, None
+
+        # Return sorted start and end dates (earliest start and latest end)
         return sorted(start_dates)[0], sorted(end_dates)[-1]
+
+
 
     def format_aspace_date(self, start_date, end_date):
         """Formats ASpace dates so that they can be parsed. 
@@ -126,8 +149,17 @@ class ASpaceDateFormatter:
             formatted_start_date (str): formatted start date
             formatted_end_date (str): formatted end date
         """
+        # Get the date range (start and end)
         start_date, end_date = self.get_date_range(dates_array)
+        
+        # If no valid date range is found, log and return default values
+        if not start_date or not end_date:
+            logging.warning("No valid date range found. Using default date range: 1900-01-01 to 9999-12-31.")
+            return '1900-01-01', '9999-12-31'
+        
+        # Format the dates if valid range exists
         formatted_start_date, formatted_end_date = self.format_aspace_date(start_date, end_date)
+        
         return formatted_start_date, formatted_end_date
     
 class aspaceOperations:
@@ -152,7 +184,7 @@ class aspaceOperations:
     def get_ao_title(self, obj_uri):
         """"fetch the title (not the complete display string) of an AO via its refid"""
         obj_metadata = as_client.get(obj_uri).json()
-        print(obj_metadata)
+        #print(obj_metadata)
         object_title = obj_metadata.get('title')
         return object_title #AOs must have titles, so not sure if I need to catch errors
 
@@ -311,6 +343,7 @@ def create_bag_and_upload(bag_dir: Path, rights_ids: list):
 
         # Fetch the dates closest to the record (move up the archival description tree until it finds a record with a date).
         dates_array = find_closest_value(obj_uri,'dates',as_client)
+        #print(dates_array) #debug
 
         # Process the dates and metadata
         aspace_date_formatter = ASpaceDateFormatter()
