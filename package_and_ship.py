@@ -266,6 +266,11 @@ class S3handler:
         global successful_uploads, failed_uploads
         aws_bucket = config['aws_bucket']
         logging.info(f"Starting S3 transfer for directory: {bag_dir} to {aws_bucket}/{s3_key}")
+
+        if config['dry_run']:
+            logging.info(f"Dry run: Would transfer files from {bag_dir} to S3 path {s3_key}")
+            return
+
         try:
             #flag to track upload
             upload_failed = False
@@ -327,8 +332,8 @@ def get_refids(input_directory):
             refids.append(folder)  # Assuming folder name is the refid
     return refids
 
-def create_bag_and_upload(bag_dir: Path, rights_ids: list):
-    """Creates a BagIt bag from a directory and its metadata."""
+def create_bag_and_upload(bag_dir: Path, rights_ids: list, dry_run=False):
+    """Creates a BagIt bag from a directory and its metadata, with dry run functionality."""
     global successful_bags, failed_bags
     try:
         # Check if the directory exists and has files
@@ -342,8 +347,7 @@ def create_bag_and_upload(bag_dir: Path, rights_ids: list):
         obj_uri = aspace_ops.uri_from_refid(refid)
 
         # Fetch the dates closest to the record (move up the archival description tree until it finds a record with a date).
-        dates_array = find_closest_value(obj_uri,'dates',as_client)
-        #print(dates_array) #debug
+        dates_array = find_closest_value(obj_uri, 'dates', as_client)
 
         # Process the dates and metadata
         aspace_date_formatter = ASpaceDateFormatter()
@@ -370,19 +374,31 @@ def create_bag_and_upload(bag_dir: Path, rights_ids: list):
             'BagIt-Profile-Identifier': 'scrc-digitization-profile.json'
         }
 
-        # Create the Bag
-        bagit.make_bag(bag_dir, metadata, checksum=['sha256'])
-        logging.info(f'Bag created from {bag_dir}.')
-        successful_bags += 1
+        # Skip bag creation if it's a dry run
+        if dry_run:
+            logging.info(f"Dry run: Skipping Bag creation for {bag_dir}. Metadata: {metadata}")
+        else:
+            # Create the Bag
+            bagit.make_bag(bag_dir, metadata, checksum=['sha256'])
+            logging.info(f'Bag created from {bag_dir}.')
+            successful_bags += 1
 
         # Construct the S3 key
         s3_key = S3handler.s3_key_construction(config['aws_bucket'], refid, collection_id)
 
-        # Transfer the bag to S3
-        S3handler.transfer_to_s3(bag_dir, s3_key)
+        # If dry_run is True, log the action but don't upload
+        if dry_run:
+            logging.info(f"Dry run: Skipping S3 upload for {bag_dir}. S3 Key would be: {s3_key}")
+        else:
+            # Transfer the bag to S3
+            S3handler.transfer_to_s3(bag_dir, s3_key)
 
-        #return the s3_key for use in DAO record creation
+        # Return the s3_key for use in DAO record creation
         return s3_key
+
+    except Exception as e:
+        logging.exception(f"Error creating bag for {bag_dir}: {str(e)}")
+        failed_bags += 1
 
     except Exception as e:
         logging.exception(f"Error creating bag for {bag_dir}: {str(e)}")
@@ -391,6 +407,7 @@ def create_bag_and_upload(bag_dir: Path, rights_ids: list):
 if __name__ == "__main__":
     input_directory = config['input_directory']
     rights_ids = config.get('rights_ids', [])
+    dry_run = config.get('dry_run', False)  # Get the dry_run flag from config or set it manually
 
     # Fetch all refids (folder names) from the input directory
     refids = get_refids(input_directory)
@@ -402,14 +419,20 @@ if __name__ == "__main__":
         try:
             logging.info(f"starting {refid}")
             bag_dir = Path(input_directory) / refid
-            s3_key = create_bag_and_upload(bag_dir, rights_ids)
-            #if the create_bag_and_upload doesn't return a s3 key, then we don't need to advance further with the workflow
+            s3_key = create_bag_and_upload(bag_dir, rights_ids, dry_run)  # Pass the dry_run flag
+            # If the create_bag_and_upload doesn't return an s3 key, then we don't need to advance further with the workflow
             if s3_key is None:
                 break
-            file_uri = S3handler.construct_s3_cloudfront_URI(s3_key)
-            aspace_ops.create_preservation_dao(file_uri,refid)
+
+            # Skip DAO creation if it's a dry run
+            if not dry_run:
+                file_uri = S3handler.construct_s3_cloudfront_URI(s3_key)
+                aspace_ops.create_preservation_dao(file_uri, refid)
+            else:
+                logging.info(f"Dry run: Skipping DAO creation for {refid}.")
+        
         except Exception as e:
             logging.error(f"Error processing {refid}: {e}")
 
-logging.info(f"Summary: {successful_uploads} successful uploads, {failed_uploads} failed uploads.")
-logging.info(f"Summary: {successful_bags} successful bags, {failed_bags} failed bags.")
+    logging.info(f"Summary: {successful_uploads} successful uploads, {failed_uploads} failed uploads.")
+    logging.info(f"Summary: {successful_bags} successful bags, {failed_bags} failed bags.")
