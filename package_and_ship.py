@@ -234,7 +234,7 @@ class aspaceOperations:
         dao_data = {
             "jsonmodel_type": "digital_object",
             "publish": True,  # Publish the DAO, but not the file_version
-            "title": f"Preservation Copy: {ao_record['display_string']}",  # Using the title of the AO as the basis for the DAO title
+            "title": f"{ao_record['display_string']}",  # Using the title of the AO as the basis for the DAO title
             "digital_object_id": new_digital_object_id,  # Use the unique ID for the DAO
             "file_versions": [file_version]
         }
