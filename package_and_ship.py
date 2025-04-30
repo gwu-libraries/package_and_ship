@@ -65,9 +65,6 @@ s3_client = boto3.client(
 )
 
 class ASpaceDateFormatter:
-    def __init__(self):
-        pass
-
     def get_date_range(self, dates_array):
         """Gets maximum and minimum dates from an AS date array.
 
@@ -419,14 +416,18 @@ if __name__ == "__main__":
         try:
             logging.info(f"starting {refid}")
             bag_dir = Path(input_directory) / refid
-            s3_key = create_bag_and_upload(bag_dir, rights_ids, dry_run)  # Pass the dry_run flag
+            s3_key = create_bag_and_upload(bag_dir, rights_ids, dry_run)
             # If the create_bag_and_upload doesn't return an s3 key, then we don't need to advance further with the workflow
             if s3_key is None:
                 break
 
             # Skip DAO creation if it's a dry run
             if not dry_run:
-                file_uri = S3handler.construct_s3_cloudfront_URI(s3_key)
+                #create the file_uri depending on what bucket the content is going to. for any scrc-digcol bucket we should use cloudfront link. if a 'preservation' bucket we can use just an s3 key
+                if 'scrc-digcol' in config.get('aws_bucket'):
+                    file_uri = S3handler.construct_s3_cloudfront_URI(s3_key)
+                elif 'scrc-preservation' in config.get('aws_bucket'):
+                    file_uri = s3_key
                 aspace_ops.create_preservation_dao(file_uri, refid)
             else:
                 logging.info(f"Dry run: Skipping DAO creation for {refid}.")
