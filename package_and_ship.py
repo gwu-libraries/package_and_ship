@@ -99,8 +99,6 @@ class ASpaceDateFormatter:
         # Return sorted start and end dates (earliest start and latest end)
         return sorted(start_dates)[0], sorted(end_dates)[-1]
 
-
-
     def format_aspace_date(self, start_date, end_date):
         """Formats ASpace dates so that they can be parsed."""
         parsed_start = parser.isoparse(start_date)
@@ -229,14 +227,14 @@ class aspaceOperations:
 class S3handler:
     @staticmethod
     def hex_to_base64(hex_string):
-        """Converts a hex string (from BagIt manifest) to a Base64 string (for S3)."""
+        """Converts a hex string to a Base64 string."""
         return base64.b64encode(binascii.unhexlify(hex_string)).decode('utf-8')
 
     @staticmethod
     def load_bag_checksums(bag_dir):
         """
-        Parses manifest-sha256.txt and tagmanifest-sha256.txt into a dictionary.
-        Returns: dictionary { 'relative/path/to/file': 'base64_encoded_checksum' }
+        Parses manifest-sha256.txt.
+        Returns: dict { 'relative/path': 'ORIGINAL_HEX_STRING' }
         """
         checksums = {}
         manifests = ['manifest-sha256.txt', 'tagmanifest-sha256.txt']
@@ -251,15 +249,13 @@ class S3handler:
                         parts = line.strip().split(maxsplit=1)
                         if len(parts) == 2:
                             hex_hash, rel_path = parts
-                            # Normalize path separators to forward slashes for consistency
                             clean_path = rel_path.strip().replace('\\', '/')
-                            # Store the Base64 version ready for S3
-                            checksums[clean_path] = S3handler.hex_to_base64(hex_hash)
+                            # Store the raw hash (do not convert yet)
+                            checksums[clean_path] = hex_hash
         return checksums
 
     @staticmethod
     def transfer_to_s3(bag_dir: Path, s3_key: str):
-        """Transfers the created bag to the specified S3 location using pre-calculated BagIt checksums."""
         global successful_uploads, failed_uploads
         aws_bucket = config['aws_bucket']
         
@@ -278,7 +274,7 @@ class S3handler:
             return
 
         try:
-            # Load checksums from the BagIt manifests
+            # Checksums are now loaded as HEX strings
             bag_checksums = S3handler.load_bag_checksums(bag_dir)
             upload_failed = False
             
@@ -293,28 +289,36 @@ class S3handler:
                         # Check if the file already exists in S3
                         try:
                             s3_client.head_object(Bucket=aws_bucket, Key=s3_path)
-                            logging.warning(f"File {s3_path} already exists in bucket {aws_bucket}. Skipping upload.")
+                            logging.warning(f"File {s3_path} already exists. Skipping.")
                             continue
                         except s3_client.exceptions.ClientError as e:
-                            # If it's not a 404, it's a real error, raise it
                             if e.response['Error']['Code'] != '404':
                                 raise
 
-                        # File does not exist, proceed with upload
-                        
-                        # Prepare S3 Arguments
+                        file_size = os.path.getsize(file_path)
                         extra_args = {'ChecksumAlgorithm': 'SHA256'}
                         
-                        # If we have a pre-calculated hash from BagIt, enforce it!
                         if rel_path in bag_checksums:
-                            #Validate using BagIt manifest checksum!!
-                            extra_args['ChecksumSHA256'] = bag_checksums[rel_path]
-                            logging.info(f"Uploading {rel_path} using BagIt manifest checksum.")
-                        else:
-                            # Usually happens for tagmanifest-sha256.txt itself (circular dependency)
-                            logging.info(f"Uploading {rel_path} (calculating checksum on the fly).")
+                            # 1. Get the Hex (User Friendly)
+                            hex_hash = bag_checksums[rel_path]
+                            
+                            # 2. Convert to Base64 (S3 System Friendly)
+                            base64_hash = S3handler.hex_to_base64(hex_hash)
 
-                        # Upload
+                            # 3. Store HEX in Metadata (Matches manifest.txt visually)
+                            extra_args['Metadata'] = {
+                                'bagit-sha256': hex_hash 
+                            }
+
+                            if file_size < transfer_config.multipart_threshold:
+                                # 4. Pass Base64 to S3 for enforcement
+                                extra_args['ChecksumSHA256'] = base64_hash
+                                logging.info(f"Uploading {rel_path} (Strict Checksum + Metadata).")
+                            else:
+                                logging.info(f"Uploading {rel_path} (Multipart - Metadata added).")
+                        else:
+                            logging.info(f"Uploading {rel_path} (Calculated on fly).")
+
                         s3_client.upload_file(
                             file_path, 
                             aws_bucket, 
@@ -322,32 +326,27 @@ class S3handler:
                             Config=transfer_config,
                             ExtraArgs=extra_args
                         )
-                        
-                        # We do not need to manually verify after upload!?
-                        # If ChecksumSHA256 was passed, S3 already verified it.
                             
                     except s3_client.exceptions.ClientError as e:
-                        # Catch Checksum Mismatches (400 Bad Request) specifically
                         if "BadDigest" in str(e) or "ChecksumMismatch" in str(e):
-                             logging.error(f"CRITICAL: Integrity failure for {file_path}. S3 rejected the upload because it didn't match the BagIt manifest.")
+                             logging.error(f"CRITICAL: Integrity failure for {file_path}.")
                         else:
                              logging.error(f"AWS Error uploading {file_path}: {e}")
                         upload_failed = True
-                        
                     except Exception as e:
-                        logging.exception(f"Unexpected error during upload of {file_path}")
+                        logging.exception(f"Unexpected error uploading {file_path}")
                         upload_failed = True
                         raise
 
             if upload_failed:
-                logging.error(f"Failed to transfer some or all files in {bag_dir} to S3.")
+                logging.error(f"Failed to transfer some files in {bag_dir}")
                 failed_uploads += 1
             else:
-                logging.info(f"Successfully transferred entire bag directory {bag_dir} to S3.")
+                logging.info(f"Successfully transferred {bag_dir}")
                 successful_uploads += 1
 
         except Exception as e:
-            logging.exception(f"Error transferring directory {bag_dir} to S3: {e}")
+            logging.exception(f"Error transferring directory {bag_dir}: {e}")
             failed_uploads += 1
 
     @staticmethod
