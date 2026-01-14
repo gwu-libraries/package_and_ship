@@ -9,11 +9,12 @@ from dateutil.relativedelta import relativedelta
 from user.config import config
 from datetime import datetime
 import boto3
-from datetime import datetime
-
+import base64
+import binascii
+from boto3.s3.transfer import TransferConfig
 
 # Set up logging
-current_time=datetime.now().strftime("%Y-%m-%d_%H-%M")
+current_time = datetime.now().strftime("%Y-%m-%d_%H-%M")
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
@@ -23,7 +24,7 @@ logging.basicConfig(
     ]
 )
 
-#log counters global variables
+# log counters global variables
 successful_uploads = 0
 failed_uploads = 0
 successful_bags = 0
@@ -65,19 +66,8 @@ s3_client = boto3.client(
 )
 
 class ASpaceDateFormatter:
-    def __init__(self):
-        pass
-
     def get_date_range(self, dates_array):
-        """Gets maximum and minimum dates from an AS date array.
-
-        Args:
-            dates (list of dicts): ArchivesSpace date list
-
-        Returns:
-            start_date (str): earliest date in date list.
-            end_date (str): latest date in date list
-        """
+        """Gets maximum and minimum dates from an AS date array."""
         start_dates = []
         end_dates = []
 
@@ -109,21 +99,8 @@ class ASpaceDateFormatter:
         # Return sorted start and end dates (earliest start and latest end)
         return sorted(start_dates)[0], sorted(end_dates)[-1]
 
-
-
     def format_aspace_date(self, start_date, end_date):
-        """Formats ASpace dates so that they can be parsed. 
-        Assumes beginning of month or year if a start date, and end of month or
-        year if an end date.
-
-        Args:
-            start_date (str): unformatted start date
-            end_date (str): unformatted end date
-
-        Returns:
-            formatted_start_date (str): start date in format YYYY-MM-DD
-            formatted_start_date (str): end date in format YYYY-MM-DD
-        """
+        """Formats ASpace dates so that they can be parsed."""
         parsed_start = parser.isoparse(start_date)
         parsed_end = parser.isoparse(end_date)
         formatted_start = parsed_start.strftime('%Y-%m-%d')
@@ -140,16 +117,7 @@ class ASpaceDateFormatter:
         return formatted_start, formatted_end
 
     def process_dates(self, dates_array):
-        """Fetch the date range and format the dates.
-
-        Args:
-            dates_array (list): list of dates
-
-        Returns:
-            formatted_start_date (str): formatted start date
-            formatted_end_date (str): formatted end date
-        """
-        # Get the date range (start and end)
+        """Fetch the date range and format the dates."""
         start_date, end_date = self.get_date_range(dates_array)
         
         # If no valid date range is found, log and return default values
@@ -171,7 +139,6 @@ class aspaceOperations:
             response.raise_for_status()
             results = response.json()
             
-            # Check if exactly one result is returned
             if len(results.get("archival_objects")) == 1:
                 return results['archival_objects'][0]['ref']
             else:
@@ -184,23 +151,21 @@ class aspaceOperations:
     def get_ao_title(self, obj_uri):
         """"fetch the title (not the complete display string) of an AO via its refid"""
         obj_metadata = as_client.get(obj_uri).json()
-        #print(obj_metadata)
         object_title = obj_metadata.get('title')
-        return object_title #AOs must have titles, so not sure if I need to catch errors
+        return object_title
 
     def get_collection_id(self, obj_uri):
         """Fetches the collection_id from an archival object URI in ArchivesSpace."""
         try:
             # Fetch the metadata for the archival object using the URI
             obj_metadata = as_client.get(obj_uri).json()
-
             # Extract the collection_id from the resource metadata (if it exists)
             collection_resource = obj_metadata.get('resource', {})
             collection_uri = collection_resource.get('ref', '')
             collection_id = ''
             if collection_uri:
                 collection_json = as_client.get(collection_uri).json()
-                collection_id = collection_json.get('id_0', '').lower()  # Convert to lowercase
+                collection_id = collection_json.get('id_0', '').lower()
             return collection_id
 
         except Exception as e:
@@ -226,17 +191,17 @@ class aspaceOperations:
         while new_digital_object_id in existing_digital_object_IDs:
             # Try to make the new_do_id unique by appending _presCopy.
             new_digital_object_id = f"{new_digital_object_id}_presCopy"
-            logging.info(f"Digital object ID {new_digital_object_id} already exists. Attempting new ID.")
+            logging.warning(f"Digital object ID {new_digital_object_id} already exists. Attempting new ID.")
 
-        file_publish = False  # Do not publish CloudFront links
-        file_version = {'file_uri': file_uri, 'publish': file_publish}
+        file_publish = False 
+        file_version = {'file_uri': file_uri, 'publish': file_publish, "use_statement" : "access_staff"}
 
         dao_data = {
             "jsonmodel_type": "digital_object",
-            "publish": True,  # Publish the DAO, but not the file_version
-            "title": f"Preservation Copy: {ao_record['display_string']}",  # Using the title of the AO as the basis for the DAO title
-            "digital_object_id": new_digital_object_id,  # Use the unique ID for the DAO
-            "file_versions": [file_version]
+            "publish": True, 
+            "title": f"{ao_record['display_string']}",
+            "digital_object_id": new_digital_object_id,
+            "file_versions": [file_version],
         }
 
         # Post the new DAO record
@@ -247,13 +212,12 @@ class aspaceOperations:
         except Exception as e:
             logging.error(f"Error creating DAO: {str(e)}")
             return
-
-        # Link the new DAO record to the AO
+        # Link the new DAO to the archival object
         try:
-            instances = ao_record.get("instances", [])  # Safely get instances
+            instances = ao_record.get("instances", [])
             instances.append({"instance_type": "digital_object", "digital_object": {"ref": dao_ref}})
-            ao_record["instances"] = instances  # Update instances
-            as_client.post(obj_uri, json=ao_record)  # Post the updated AO
+            ao_record["instances"] = instances
+            as_client.post(obj_uri, json=ao_record)
             logging.info(f"Linked new DAO {dao_ref} to AO {obj_uri}")
         except Exception as e:
             logging.error(f"Error updating AO with new instance: {str(e)}")
@@ -261,10 +225,48 @@ class aspaceOperations:
         return dao_data
 
 class S3handler:
+    @staticmethod
+    def hex_to_base64(hex_string):
+        """Converts a hex string to a Base64 string."""
+        return base64.b64encode(binascii.unhexlify(hex_string)).decode('utf-8')
+
+    @staticmethod
+    def load_bag_checksums(bag_dir):
+        """
+        Parses manifest-sha256.txt.
+        Returns: dict { 'relative/path': 'ORIGINAL_HEX_STRING' }
+        """
+        checksums = {}
+        manifests = ['manifest-sha256.txt', 'tagmanifest-sha256.txt']
+        
+        for manifest_name in manifests:
+            manifest_path = os.path.join(bag_dir, manifest_name)
+            if os.path.exists(manifest_path):
+                with open(manifest_path, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        # BagIt lines are: CHECKSUM  FILENAME
+                        # split maxsplit=1 to handle filenames with spaces correctly
+                        parts = line.strip().split(maxsplit=1)
+                        if len(parts) == 2:
+                            hex_hash, rel_path = parts
+                            clean_path = rel_path.strip().replace('\\', '/')
+                            # Store the raw hash (do not convert yet)
+                            checksums[clean_path] = hex_hash
+        return checksums
+
+    @staticmethod
     def transfer_to_s3(bag_dir: Path, s3_key: str):
-        """Transfers the created bag to the specified S3 location."""
         global successful_uploads, failed_uploads
         aws_bucket = config['aws_bucket']
+        
+        # Configure Multipart settings
+        transfer_config = TransferConfig(
+            multipart_threshold=100 * 1024 * 1024, 
+            max_concurrency=10,
+            multipart_chunksize=25 * 1024 * 1024,
+            use_threads=True
+        )
+
         logging.info(f"Starting S3 transfer for directory: {bag_dir} to {aws_bucket}/{s3_key}")
 
         if config['dry_run']:
@@ -272,55 +274,94 @@ class S3handler:
             return
 
         try:
-            #flag to track upload
+            # Checksums are now loaded as HEX strings
+            bag_checksums = S3handler.load_bag_checksums(bag_dir)
             upload_failed = False
-            aws_bucket = config['aws_bucket']
+            
             for root, _, files in os.walk(bag_dir):
                 for file in files:
                     file_path = os.path.join(root, file)
-                    #clean s3 path
-                    s3_path = os.path.join(s3_key, os.path.relpath(file_path, bag_dir)).replace("\\", "/")
+                    # Clean s3 path and relative path for lookup
+                    rel_path = os.path.relpath(file_path, bag_dir).replace("\\", "/")
+                    s3_path = os.path.join(s3_key, rel_path).replace("\\", "/")
+                    
                     try:
-                        # Check if the file already exists in S3 by checking for metadata via HeadObject
-                        s3_client.head_object(Bucket=aws_bucket, Key=s3_path)
-                        logging.warning(f"File {s3_path} already exists in bucket {aws_bucket}. Skipping upload.")
-                    except s3_client.exceptions.ClientError as e:
-                        if e.response['Error']['Code'] == '404':
-                            # File does not exist, proceed with upload
-                            s3_client.upload_file(file_path, aws_bucket, s3_path)
-                            logging.info(f'Uploaded {file_path} to s3://{aws_bucket}/{s3_path}.')
+                        # Check if the file already exists in S3
+                        try:
+                            s3_client.head_object(Bucket=aws_bucket, Key=s3_path)
+                            logging.warning(f"File {s3_path} already exists. Skipping.")
+                            continue
+                        except s3_client.exceptions.ClientError as e:
+                            if e.response['Error']['Code'] != '404':
+                                raise
+
+                        file_size = os.path.getsize(file_path)
+                        extra_args = {'ChecksumAlgorithm': 'SHA256'}
+                        
+                        if rel_path in bag_checksums:
+                            # 1. Get the Hex (User Friendly)
+                            hex_hash = bag_checksums[rel_path]
+                            
+                            # 2. Convert to Base64 (S3 System Friendly)
+                            base64_hash = S3handler.hex_to_base64(hex_hash)
+
+                            # 3. Store HEX in Metadata (Matches manifest.txt visually)
+                            extra_args['Metadata'] = {
+                                'bagit-sha256': hex_hash 
+                            }
+
+                            if file_size < transfer_config.multipart_threshold:
+                                # 4. Pass Base64 to S3 for enforcement
+                                extra_args['ChecksumSHA256'] = base64_hash
+                                logging.info(f"Uploading {rel_path} (Strict Checksum + Metadata).")
+                            else:
+                                logging.info(f"Uploading {rel_path} (Multipart - Metadata added).")
                         else:
-                            logging.exception(f"Unexpected error during upload of {file_path}")
-                            upload_failed = True
-                            raise
-                # If any failure happened during the transfer process, log the failure for the whole directory
+                            logging.info(f"Uploading {rel_path} (Calculated on fly).")
+
+                        s3_client.upload_file(
+                            file_path, 
+                            aws_bucket, 
+                            s3_path, 
+                            Config=transfer_config,
+                            ExtraArgs=extra_args
+                        )
+                            
+                    except s3_client.exceptions.ClientError as e:
+                        if "BadDigest" in str(e) or "ChecksumMismatch" in str(e):
+                             logging.error(f"CRITICAL: Integrity failure for {file_path}.")
+                        else:
+                             logging.error(f"AWS Error uploading {file_path}: {e}")
+                        upload_failed = True
+                    except Exception as e:
+                        logging.exception(f"Unexpected error uploading {file_path}")
+                        upload_failed = True
+                        raise
+
             if upload_failed:
-                logging.error(f"Failed to transfer some or all files in {bag_dir} to S3.")
+                logging.error(f"Failed to transfer some files in {bag_dir}")
                 failed_uploads += 1
             else:
-                logging.info(f"Successfully transferred entire bag directory {bag_dir} to S3.")
+                logging.info(f"Successfully transferred {bag_dir}")
                 successful_uploads += 1
 
         except Exception as e:
-            logging.exception(f"Error transferring directory {bag_dir} to S3: {e}")
+            logging.exception(f"Error transferring directory {bag_dir}: {e}")
             failed_uploads += 1
 
+    @staticmethod
     def s3_key_construction(aws_bucket, refid, collection_id):
         """Constructs the S3 key for the given bucket, refid, and collection_id."""
-        base_s3_path = config.get('base_s3_path', '')  # Fetch the base path from config
-        # Construct the S3 key
+        base_s3_path = config.get('base_s3_path', '') 
         s3_key = os.path.join(base_s3_path, collection_id, refid).replace("\\", "/")
         return s3_key
     
+    @staticmethod
     def construct_s3_cloudfront_URI(s3_path):
-        '''
-        Takes an S3 prefix (the S3 key without the bucket name) and returns a CloudFront URI. 
-        '''
+        """Takes an S3 prefix and returns a CloudFront URI."""
         folder_prefix = "inventory.html?folder="
         cloudfront_base_uri = config.get('cloudfront_base_URI')
-
         cloudfront_URI = cloudfront_base_uri + folder_prefix + s3_path
-
         return cloudfront_URI
 
 def get_refids(input_directory):
@@ -329,7 +370,7 @@ def get_refids(input_directory):
     for folder in os.listdir(input_directory):
         folder_path = os.path.join(input_directory, folder)
         if os.path.isdir(folder_path):
-            refids.append(folder)  # Assuming folder name is the refid
+            refids.append(folder)
     return refids
 
 def create_bag_and_upload(bag_dir: Path, rights_ids: list, dry_run=False):
@@ -343,7 +384,7 @@ def create_bag_and_upload(bag_dir: Path, rights_ids: list, dry_run=False):
             return
         
         # Fetch the URI from ArchivesSpace based on refid (folder name)
-        refid = bag_dir.name  # Assuming folder name is the refid
+        refid = bag_dir.name  
         obj_uri = aspace_ops.uri_from_refid(refid)
 
         # Fetch the dates closest to the record (move up the archival description tree until it finds a record with a date).
@@ -379,7 +420,7 @@ def create_bag_and_upload(bag_dir: Path, rights_ids: list, dry_run=False):
             logging.info(f"Dry run: Skipping Bag creation for {bag_dir}. Metadata: {metadata}")
         else:
             # Create the Bag
-            bagit.make_bag(bag_dir, metadata, checksum=['sha256'])
+            bagit.make_bag(str(bag_dir), metadata, checksum=['sha256'])
             logging.info(f'Bag created from {bag_dir}.')
             successful_bags += 1
 
@@ -393,12 +434,7 @@ def create_bag_and_upload(bag_dir: Path, rights_ids: list, dry_run=False):
             # Transfer the bag to S3
             S3handler.transfer_to_s3(bag_dir, s3_key)
 
-        # Return the s3_key for use in DAO record creation
         return s3_key
-
-    except Exception as e:
-        logging.exception(f"Error creating bag for {bag_dir}: {str(e)}")
-        failed_bags += 1
 
     except Exception as e:
         logging.exception(f"Error creating bag for {bag_dir}: {str(e)}")
@@ -407,7 +443,7 @@ def create_bag_and_upload(bag_dir: Path, rights_ids: list, dry_run=False):
 if __name__ == "__main__":
     input_directory = config['input_directory']
     rights_ids = config.get('rights_ids', [])
-    dry_run = config.get('dry_run', False)  # Get the dry_run flag from config or set it manually
+    dry_run = config.get('dry_run', False)
 
     # Fetch all refids (folder names) from the input directory
     refids = get_refids(input_directory)
@@ -419,14 +455,18 @@ if __name__ == "__main__":
         try:
             logging.info(f"starting {refid}")
             bag_dir = Path(input_directory) / refid
-            s3_key = create_bag_and_upload(bag_dir, rights_ids, dry_run)  # Pass the dry_run flag
-            # If the create_bag_and_upload doesn't return an s3 key, then we don't need to advance further with the workflow
+            s3_key = create_bag_and_upload(bag_dir, rights_ids, dry_run)
+            
             if s3_key is None:
-                break
+                continue
 
             # Skip DAO creation if it's a dry run
             if not dry_run:
-                file_uri = S3handler.construct_s3_cloudfront_URI(s3_key)
+                # create the file_uri depending on what bucket the content is going to
+                if 'scrc-digcol' in config.get('aws_bucket'):
+                    file_uri = S3handler.construct_s3_cloudfront_URI(s3_key)
+                elif 'scrc-preservation' in config.get('aws_bucket'):
+                    file_uri = s3_key
                 aspace_ops.create_preservation_dao(file_uri, refid)
             else:
                 logging.info(f"Dry run: Skipping DAO creation for {refid}.")
