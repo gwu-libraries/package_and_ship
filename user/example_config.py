@@ -12,9 +12,12 @@ aws_bucket = ''
 base_s3_path = ''
 aws_region = ''
 cloudfront_base_URI = ''
+preservation_aws_bucket= ''
 
 #input directory
 input_directory = ''
+
+dry_run = True
 
 config = {
     'aspace_user': aspace_user,
@@ -26,8 +29,9 @@ config = {
     'aws_secret': aws_secret_key,
     'base_s3_path': base_s3_path,
     'aws_bucket': aws_bucket,
+    'preservation_aws_bucket': preservation_aws_bucket,
     'aws_region': aws_region,
     'cloudfront_base_URI': cloudfront_base_URI,
-    'input_directory':input_directory
+    'input_directory':input_directory,
+    'dry_run': dry_run
 }
-
