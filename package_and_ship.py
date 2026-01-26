@@ -1,4 +1,5 @@
 import os
+import time
 import logging
 from pathlib import Path
 import bagit
@@ -131,23 +132,39 @@ class ASpaceDateFormatter:
         return formatted_start_date, formatted_end_date
     
 class aspaceOperations:
-    def uri_from_refid(self, refid):
-        """Fetch the URI of an archival object from ArchivesSpace by its ref_id."""
-        try:
-            find_by_refid_url = f"repositories/{config['aspace_repo']}/find_by_id/archival_objects?ref_id[]={refid}"
-            response = as_client.get(find_by_refid_url)
-            response.raise_for_status()
-            results = response.json()
-            
-            if len(results.get("archival_objects")) == 1:
-                return results['archival_objects'][0]['ref']
-            else:
-                raise Exception(f"{len(results.get('archival_objects'))} results found for search {find_by_refid_url}. Expected one result.")
+    def uri_from_refid(self, refid, max_retries=3, retry_delay=10):
+        """
+        Fetch the URI of an archival object from ArchivesSpace by its ref_id.
+        Includes retry logic for transient network errors.
+        """
         
-        except Exception as e:
-            logging.error(f"Error fetching URI for refid {refid}: {str(e)}")
-            raise
+        find_by_refid_url = f"repositories/{config['aspace_repo']}/find_by_id/archival_objects?ref_id[]={refid}"
+        last_exception = None
 
+        for attempt in range(1, max_retries + 1):
+            try:
+                response = as_client.get(find_by_refid_url)
+                response.raise_for_status()
+                results = response.json()
+                
+                if len(results.get("archival_objects")) == 1:
+                    return results['archival_objects'][0]['ref']
+                else:
+                    # Logic error (0 or >1 results), do not retry this specific error
+                    raise Exception(f"{len(results.get('archival_objects'))} results found for search {find_by_refid_url}. Expected one result.")
+            
+            except Exception as e:
+                last_exception = e
+                if attempt < max_retries:
+                    logging.warning(f"Attempt {attempt}/{max_retries} failed for refid {refid}: {str(e)}. Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                else:
+                    logging.error(f"All {max_retries} attempts failed for refid {refid}.")
+
+        if last_exception:
+            logging.error(f"Error fetching URI for refid {refid}: {str(last_exception)}")
+            raise last_exception
+        
     def get_ao_title(self, obj_uri):
         """"fetch the title (not the complete display string) of an AO via its refid"""
         obj_metadata = as_client.get(obj_uri).json()
