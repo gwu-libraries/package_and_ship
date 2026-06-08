@@ -30,6 +30,23 @@ root_folder/
         └── audio_file_1_caption_eng.vtt
  </pre>
 
+ # Usage    
+
+ ## 1. Batch Processing
+
+ Scans the configured base directory and processes every valid object subfolder sequentially.
+
+ ```
+ python package_ship.py
+ ```
+
+ ## 2. Single Processing
+ Processes just one specified folder.
+
+ ```
+ python package_ship.py -r ref_id_001
+ ```
+
 # Example bag-info.txt
 
 Ideally, this bag-info file should contain enough information to satisfy [DACS Requirements for Single-level Descriptions.](https://saa-ts-dacs.github.io/dacs/06_part_I/02_chapter_01.html) At present, the hierarchical nature of our descriptive data and minimally described records pose some challenge related to fulfilling this requirement. Missing data, like creator, languages, and rights information, could be inferred by working up the hierarchy. However, this would likely lead to inaccurate or misrepresented data.
