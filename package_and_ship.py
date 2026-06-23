@@ -13,6 +13,7 @@ import boto3
 import base64
 import binascii
 from boto3.s3.transfer import TransferConfig
+import argparse
 
 # Set up logging
 current_time = datetime.now().strftime("%Y-%m-%d_%H-%M")
@@ -458,16 +459,41 @@ def create_bag_and_upload(bag_dir: Path, rights_ids: list, dry_run=False):
         failed_bags += 1
 
 if __name__ == "__main__":
+    # 1. Set argument parser 
+    cli_parser = argparse.ArgumentParser(
+        description="Packager and Shipper pipeline for ArchivesSpace and S3."
+    )
+    cli_parser.add_argument(
+        '-r', '--refid', 
+        type=str, 
+        help="Specify a single ref_id folder to process. If omitted, the entire directory will be processed."
+    )
+    args = cli_parser.parse_args()
+
+    # 2. Load config values
     input_directory = config['input_directory']
     rights_ids = config.get('rights_ids', [])
     dry_run = config.get('dry_run', False)
 
-    # Fetch all refids (folder names) from the input directory
-    refids = get_refids(input_directory)
-
-    # Create an instance of the aspaceOperations class
+    # 3. Create an instance of the aspaceOperations class
     aspace_ops = aspaceOperations()
 
+    # 4. Determine execution mode (Single vs. Batch)
+    if args.refid:
+        # Verify the requested folder actually exists
+        target_path = Path(input_directory) / args.refid
+        if target_path.exists() and target_path.is_dir():
+            logging.info(f"Targeted execution: Processing single ref_id '{args.refid}'")
+            refids = [args.refid]
+        else:
+            logging.error(f"The directory for ref_id '{args.refid}' does not exist at {target_path}")
+            refids = []
+    else:
+        # Fall back to default batch mode
+        logging.info("Batch execution: Processing all directories in input_directory.")
+        refids = get_refids(input_directory)
+
+    # 5. Process the selected ref_id(s)
     for refid in refids:
         try:
             logging.info(f"starting {refid}")
@@ -491,5 +517,6 @@ if __name__ == "__main__":
         except Exception as e:
             logging.error(f"Error processing {refid}: {e}")
 
+    # Output summaries
     logging.info(f"Summary: {successful_uploads} successful uploads, {failed_uploads} failed uploads.")
     logging.info(f"Summary: {successful_bags} successful bags, {failed_bags} failed bags.")
