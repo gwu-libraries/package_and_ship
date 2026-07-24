@@ -81,7 +81,7 @@ def analyze_bag_contents(bag_dir: Path):
 
 
 def analyze_bag_contents(bag_dir: Path):
-    """Calculates file count, formatted extent size details, and generates a file list string."""
+    """Calculates file count, formatted extent size details, and generates an HTML-tagged file list string."""
     data_dir = bag_dir / "data" if (bag_dir / "data").exists() else bag_dir
     files = [f for f in data_dir.rglob('*') if f.is_file() and not f.name.startswith('.')]
 
@@ -99,43 +99,64 @@ def analyze_bag_contents(bag_dir: Path):
         extent_number = f"{total_bytes / 1024:.2f}"
         extent_type = "kilobyte(s)"
 
-    # Build relative file path inventory
+    # Wrap each relative path in <p> tags so ArchivesSpace renders line breaks
     file_list = [f.relative_to(data_dir).as_posix() for f in files]
-    file_list_text = "\n".join(sorted(file_list))
+    file_list_html = "".join([f"<p>{path}</p>" for path in sorted(file_list)])
 
-    return total_files, extent_number, extent_type, file_list_text
+    return total_files, extent_number, extent_type, file_list_html
 
 
-def update_ao_born_digital_metadata(obj_uri, ao_record, bag_dir: Path):
-    """Appends an extent entry (size + unit) and a file list note to the Archival Object record."""
-    total_files, extent_number, extent_type, file_list_text = analyze_bag_contents(bag_dir)
+def update_ao_born_digital_metadata(obj_uri: str, ao_record: dict, bag_dir: Path, accession: str = None):
+    """Appends extent data, scope & content note, and optional accession info to the AO in ArchivesSpace."""
+    total_files, extent_number, extent_type, file_list_html = analyze_bag_contents(bag_dir)
 
     # 1. Update Extents
     extents = ao_record.setdefault("extents", [])
     extents.append({
         "jsonmodel_type": "extent",
         "portion": "whole",
-        "number": extent_number,          # e.g., "0.80"
-        "extent_type": extent_type,        # e.g., "megabyte(s)"
+        "number": extent_number,
+        "extent_type": extent_type,
         "container_summary": f"Total Files: {total_files}"
     })
 
-    # 2. Append File List Note
+    # 2. Append Scope and Content Note using HTML formatting tags (<p>, <b>)
     notes = ao_record.setdefault("notes", [])
+    
+    note_title = f"Born-Digital File Inventory (Accession {accession})" if accession else "Born-Digital File Inventory"
+    header_info = f"<p><b>Accession:</b> {accession}</p>" if accession else ""
+
+    note_body = (
+        f"{header_info}"
+        f"<p><b>Digital inventory:</b> {total_files} files, {extent_number} {extent_type}</p>"
+        f"<p><b>Files:</b></p>"
+        f"{file_list_html}"
+    )
+
     file_list_note = {
         "jsonmodel_type": "note_multipart",
         "type": "scopecontent",
         "publish": True,
-        "title": "Born-Digital File Inventory & Technical Details",
+        "title": note_title,
         "subnotes": [
             {
                 "jsonmodel_type": "note_text",
-                "content": f"Digital inventory ({total_files} files, {extent_number} {extent_type}):\n\n{file_list_text}",
+                "content": note_body,
                 "publish": True
             }
         ]
     }
     notes.append(file_list_note)
+
+    # 3. Post Updated AO Record
+    try:
+        response = as_client.post(obj_uri, json=ao_record)
+        if response.status_code == 200:
+            logging.info(f"Successfully updated AO metadata and scope note for {obj_uri}")
+        else:
+            logging.error(f"Failed to update AO metadata for {obj_uri}: {response.text}")
+    except Exception as e:
+        logging.error(f"Error posting updated AO record for {obj_uri}: {e}")
 
     # 3. Post Updated AO Record
     try:
