@@ -124,12 +124,9 @@ def update_ao_born_digital_metadata(obj_uri: str, ao_record: dict, bag_dir: Path
     notes = ao_record.setdefault("notes", [])
     
     note_title = f"Born-Digital File Inventory (Accession {accession})" if accession else "Born-Digital File Inventory"
-    header_info = f"<p><b>Accession:</b> {accession}</p>" if accession else ""
 
     note_body = (
-        f"{header_info}"
-        f"<p><b>Digital inventory:</b> {total_files} files, {extent_number} {extent_type}</p>"
-        f"<p><b>Files:</b></p>"
+        f"<p><b>Digital File List:</b></p>"
         f"{file_list_html}"
     )
 
