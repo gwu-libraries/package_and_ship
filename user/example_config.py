@@ -14,7 +14,7 @@ cloudfront_base_URI = ''
 
 # Input & Execution Settings
 input_directory = ''
-dry_run = True
+dry_run = False
 
 config = {
     'aspace_user': aspace_user,

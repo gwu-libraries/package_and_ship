@@ -55,6 +55,98 @@ s3_client = boto3.client(
     region_name=config['aws_region']
 )
 
+# ------------------------------------------------------------------------------
+# Born-Digital & File Analysis Helpers
+# ------------------------------------------------------------------------------
+
+def analyze_bag_contents(bag_dir: Path):
+    """Calculates file count, total size, and generates a formatted file list string."""
+    data_dir = bag_dir / "data" if (bag_dir / "data").exists() else bag_dir
+    files = [f for f in data_dir.rglob('*') if f.is_file() and not f.name.startswith('.')]
+
+    total_bytes = sum(f.stat().st_size for f in files)
+    total_files = len(files)
+
+    # Format human-readable size
+    if total_bytes >= 1024 ** 3:
+        formatted_size = f"{total_bytes / (1024 ** 3):.2f} GB"
+    else:
+        formatted_size = f"{total_bytes / (1024 ** 2):.2f} MB"
+
+    # Build relative file path inventory
+    file_list = [f.relative_to(data_dir).as_posix() for f in files]
+    file_list_text = "\n".join(sorted(file_list))
+
+    return total_files, formatted_size, file_list_text
+
+
+def analyze_bag_contents(bag_dir: Path):
+    """Calculates file count, formatted extent size details, and generates a file list string."""
+    data_dir = bag_dir / "data" if (bag_dir / "data").exists() else bag_dir
+    files = [f for f in data_dir.rglob('*') if f.is_file() and not f.name.startswith('.')]
+
+    total_bytes = sum(f.stat().st_size for f in files)
+    total_files = len(files)
+
+    # Dynamic unit selection matching ArchivesSpace controlled vocabulary values
+    if total_bytes >= 1024 ** 3:
+        extent_number = f"{total_bytes / (1024 ** 3):.2f}"
+        extent_type = "gigabyte(s)"
+    elif total_bytes >= 1024 ** 2:
+        extent_number = f"{total_bytes / (1024 ** 2):.2f}"
+        extent_type = "megabyte(s)"
+    else:
+        extent_number = f"{total_bytes / 1024:.2f}"
+        extent_type = "kilobyte(s)"
+
+    # Build relative file path inventory
+    file_list = [f.relative_to(data_dir).as_posix() for f in files]
+    file_list_text = "\n".join(sorted(file_list))
+
+    return total_files, extent_number, extent_type, file_list_text
+
+
+def update_ao_born_digital_metadata(obj_uri, ao_record, bag_dir: Path):
+    """Appends an extent entry (size + unit) and a file list note to the Archival Object record."""
+    total_files, extent_number, extent_type, file_list_text = analyze_bag_contents(bag_dir)
+
+    # 1. Update Extents
+    extents = ao_record.setdefault("extents", [])
+    extents.append({
+        "jsonmodel_type": "extent",
+        "portion": "whole",
+        "number": extent_number,          # e.g., "0.80"
+        "extent_type": extent_type,        # e.g., "megabyte(s)"
+        "container_summary": f"Total Files: {total_files}"
+    })
+
+    # 2. Append File List Note
+    notes = ao_record.setdefault("notes", [])
+    file_list_note = {
+        "jsonmodel_type": "note_multipart",
+        "type": "scopecontent",
+        "publish": True,
+        "title": "Born-Digital File Inventory & Technical Details",
+        "subnotes": [
+            {
+                "jsonmodel_type": "note_text",
+                "content": f"Digital inventory ({total_files} files, {extent_number} {extent_type}):\n\n{file_list_text}",
+                "publish": True
+            }
+        ]
+    }
+    notes.append(file_list_note)
+
+    # 3. Post Updated AO Record
+    try:
+        response = as_client.post(obj_uri, json=ao_record)
+        if response.status_code == 200:
+            logging.info(f"Successfully updated AO metadata and file list note for {obj_uri}")
+        else:
+            logging.error(f"Failed to update AO metadata for {obj_uri}: {response.text}")
+    except Exception as e:
+        logging.error(f"Error posting updated AO record for {obj_uri}: {e}")
+
 
 # ArchivesSpace & Date Helpers
 # ------------------------------------------------------------------------------
@@ -251,8 +343,8 @@ def construct_cloudfront_uri(s3_path):
 # Core exec pipeline
 # ------------------------------------------------------------------------------
 
-def create_bag_and_upload(bag_dir: Path, dry_run=False):
-    """Generates BagIt package, uploads contents to S3, and creates DAO in ArchivesSpace."""
+def create_bag_and_upload(bag_dir: Path, dry_run=False, born_digital=False):
+    """Generates BagIt package, uploads contents to S3, updates AO notes/extents if born-digital, and creates DAO."""
     if not bag_dir.exists() or not any(bag_dir.iterdir()):
         logging.error(f"Directory {bag_dir} is empty or missing.")
         stats["failed_bags"] += 1
@@ -270,22 +362,30 @@ def create_bag_and_upload(bag_dir: Path, dry_run=False):
     collection_id = as_client.get(res_ref).json().get('id_0', '').lower() if res_ref else ''
 
     # Metadata assembly
+    origin = 'born-digital' if born_digital else 'digitization'
+    profile_id = 'scrc-born-digital-profile.json' if born_digital else 'scrc-digitization-profile.json'
+
     metadata = {
         'ArchivesSpace-URI': obj_uri,
         'Start-Date': formatted_start,
         'Title': ao_record.get('title'),
         'End-Date': formatted_end,
-        'Origin': 'digitization',
+        'Origin': origin,
         'Rights-ID': '',
         'Collection-ID': collection_id,
-        'BagIt-Profile-Identifier': 'scrc-digitization-profile.json'
+        'BagIt-Profile-Identifier': profile_id
     }
+
+    # Born-Digital ArchivesSpace updates
+    if born_digital and not dry_run:
+        logging.info(f"Updating Archival Object {refid} with born-digital extent and file inventory note...")
+        update_ao_born_digital_metadata(obj_uri, ao_record, bag_dir)
 
     if dry_run:
         logging.info(f"[Dry Run] Skipping Bag creation for {bag_dir}. Metadata: {metadata}")
     else:
         bagit.make_bag(str(bag_dir), metadata, checksum=['sha256'])
-        logging.info(f"Bag created from {bag_dir}.")
+        logging.info(f"Bag created from {bag_dir} (Origin: {origin}).")
         stats["successful_bags"] += 1
 
     # S3 transfer
@@ -309,6 +409,11 @@ def parse_cli_args():
         '-r', '--refid', 
         type=str, 
         help="Target a single ref_id folder to process instead of running batch mode."
+    )
+    parser.add_argument(
+        '-b', '--born-digital',
+        action='store_true',
+        help="Set BagIt metadata Origin to 'born-digital', update profile identifier, and attach extent & file inventory notes to the AO."
     )
     return parser.parse_args()
 
@@ -334,7 +439,11 @@ if __name__ == "__main__":
         try:
             logging.info(f"Starting pipeline execution for ref_id: {refid}")
             bag_dir = input_directory / refid
-            s3_key = create_bag_and_upload(bag_dir, dry_run=dry_run)
+            s3_key = create_bag_and_upload(
+                bag_dir, 
+                dry_run=dry_run, 
+                born_digital=args.born_digital
+            )
 
             if s3_key and not dry_run:
                 aws_bucket = config.get('aws_bucket', '')
@@ -351,7 +460,7 @@ if __name__ == "__main__":
 
     # Summary reporting
     logging.info("========================================")
-    logging.info("SUMMARY:")
+    logging.info("EXECUTION SUMMARY")
     logging.info(f"Bags Created / Validated: {stats['successful_bags']} success, {stats['failed_bags']} failed")
     logging.info(f"S3 Transfers:             {stats['successful_uploads']} success, {stats['failed_uploads']} failed")
     logging.info("========================================")
