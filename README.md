@@ -1,5 +1,5 @@
 # Package and Ship
-Packages and ingests digitized material into dig-col storage.
+Packages and ingests digital collections materials into SCRC digcol storage. 
 
 * Bags content with relevant descrptive metadata retrieved via the ArchivesSpace API. 
 * Places the content in the relevant "collection" level directory in dig-col storage
@@ -32,20 +32,41 @@ root_folder/
 
  # Usage    
 
- ## 1. Batch Processing
+ ## 1. Standard Transfer Mode (Digitized Content)
 
- Scans the configured base directory and processes every valid object subfolder sequentially.
+ ### Batch Mode (All folders in input directory):
+ Scans the configured base directory and processes every valid object subfolder sequentially. 
 
  ```
- python package_ship.py
+ python package_and_ship.py
  ```
 
- ## 2. Single Processing
+ ### Single ref_id Folder:
  Processes just one specified folder.
 
  ```
  python package_ship.py -r ref_id_001
+
  ```
+
+## 2. Born-Digital Transfer Mode (-b)
+
+Enables born-digital bag metadata and updates ArchivesSpace AO records. Updates AO records w/ extent by grabbing data from the bag manifest and populates a file list as a scope/cotnent note.
+
+### Single ref_id Folder:
+
+```
+python package_and_ship.py -r <ref_id_folder_name> -b
+
+```
+
+### Batch Mode (All input folders as Born-Digital):
+
+```
+python package_ship.py -b
+
+```
+
 
 # Example bag-info.txt
 

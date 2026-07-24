@@ -343,7 +343,7 @@ def construct_cloudfront_uri(s3_path):
 # Core exec pipeline
 # ------------------------------------------------------------------------------
 
-def create_bag_and_upload(bag_dir: Path, dry_run=False, born_digital=False):
+def create_bag_and_upload(bag_dir: Path, dry_run=False, born_digital=False, accession=None):
     """Generates BagIt package, uploads contents to S3, updates AO notes/extents if born-digital, and creates DAO."""
     if not bag_dir.exists() or not any(bag_dir.iterdir()):
         logging.error(f"Directory {bag_dir} is empty or missing.")
@@ -376,10 +376,14 @@ def create_bag_and_upload(bag_dir: Path, dry_run=False, born_digital=False):
         'BagIt-Profile-Identifier': profile_id
     }
 
+    # Add optional Accession-Number to bag-info metadata
+    if accession:
+        metadata['Accession-Number'] = accession
+
     # Born-Digital ArchivesSpace updates
     if born_digital and not dry_run:
         logging.info(f"Updating Archival Object {refid} with born-digital extent and file inventory note...")
-        update_ao_born_digital_metadata(obj_uri, ao_record, bag_dir)
+        update_ao_born_digital_metadata(obj_uri, ao_record, bag_dir, accession=accession)
 
     if dry_run:
         logging.info(f"[Dry Run] Skipping Bag creation for {bag_dir}. Metadata: {metadata}")
@@ -399,7 +403,6 @@ def create_bag_and_upload(bag_dir: Path, dry_run=False, born_digital=False):
 
     return s3_key
 
-
 def parse_cli_args():
     """Parses command-line arguments for single-folder or batch processing."""
     parser = argparse.ArgumentParser(
@@ -415,6 +418,12 @@ def parse_cli_args():
         action='store_true',
         help="Set BagIt metadata Origin to 'born-digital', update profile identifier, and attach extent & file inventory notes to the AO."
     )
+    parser.add_argument(
+    "-a", "--accession",
+    type=str,
+    default=None,
+    help="Optional accession number associated with the transfer (e.g., 2026-023)"
+)
     return parser.parse_args()
 
 
