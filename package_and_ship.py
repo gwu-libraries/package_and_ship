@@ -13,13 +13,16 @@ from dateutil import parser
 from dateutil.relativedelta import relativedelta
 from user.config import config
 
-# Setup logging
+# Setup logging environment
+log_dir = Path("logs")
+log_dir.mkdir(parents=True, exist_ok=True)
+
 current_time = datetime.now().strftime("%Y-%m-%d_%H-%M")
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler(f"logs/package_ship_{current_time}.log", mode='a'),
+        logging.FileHandler(log_dir / f"package_ship_{current_time}.log", mode='a'),
         logging.StreamHandler()
     ]
 )
@@ -51,7 +54,6 @@ s3_client = boto3.client(
     aws_secret_access_key=config['aws_secret'],
     region_name=config['aws_region']
 )
-
 
 
 # ArchivesSpace & Date Helpers
@@ -146,7 +148,6 @@ def create_preservation_dao(file_uri, refid):
         logging.info(f"Linked new DAO {dao_ref} to AO {obj_uri}")
     except Exception as e:
         logging.error(f"Error creating or linking DAO for {refid}: {e}")
-
 
 
 # S3 & Integrity Helpers
@@ -299,11 +300,21 @@ def create_bag_and_upload(bag_dir: Path, dry_run=False):
     return s3_key
 
 
-if __name__ == "__main__":
-    cli_parser = argparse.ArgumentParser(description="Packager and Shipper pipeline for ArchivesSpace and S3.")
-    cli_parser.add_argument('-r', '--refid', type=str, help="Single ref_id folder to process.")
-    args = cli_parser.parse_args()
+def parse_cli_args():
+    """Parses command-line arguments for single-folder or batch processing."""
+    parser = argparse.ArgumentParser(
+        description="Packager and Shipper pipeline for ArchivesSpace and S3."
+    )
+    parser.add_argument(
+        '-r', '--refid', 
+        type=str, 
+        help="Target a single ref_id folder to process instead of running batch mode."
+    )
+    return parser.parse_args()
 
+
+if __name__ == "__main__":
+    args = parse_cli_args()
     input_directory = Path(config['input_directory'])
     dry_run = config.get('dry_run', False)
 
@@ -321,7 +332,7 @@ if __name__ == "__main__":
 
     for refid in refids:
         try:
-            logging.info(f"Starting {refid}")
+            logging.info(f"Starting pipeline execution for ref_id: {refid}")
             bag_dir = input_directory / refid
             s3_key = create_bag_and_upload(bag_dir, dry_run=dry_run)
 
@@ -336,7 +347,11 @@ if __name__ == "__main__":
                 logging.info(f"[Dry Run] Skipping DAO creation for {refid}.")
 
         except Exception as e:
-            logging.error(f"Error processing {refid}: {e}")
+            logging.error(f"Failed processing ref_id {refid}: {e}")
 
-    logging.info(f"Summary Uploads: {stats['successful_uploads']} successful, {stats['failed_uploads']} failed.")
-    logging.info(f"Summary Bags: {stats['successful_bags']} successful, {stats['failed_bags']} failed.")
+    # Summary reporting
+    logging.info("========================================")
+    logging.info("SUMMARY:")
+    logging.info(f"Bags Created / Validated: {stats['successful_bags']} success, {stats['failed_bags']} failed")
+    logging.info(f"S3 Transfers:             {stats['successful_uploads']} success, {stats['failed_uploads']} failed")
+    logging.info("========================================")
