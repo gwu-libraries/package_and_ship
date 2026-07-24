@@ -1,22 +1,19 @@
-#ArchivesSpace
-aspace_user = '' #put aspace username here
-aspace_pass = '' #put aspace password here
-aspace_repo = '2' #scoped narrowly to the SCRC repository
-aspace_host = '' #put API host URL here. Make sure you don't have a slash ('/') at the end of the URL.
-aspace_pui = 'https://searcharchives.library.gwu.edu/repositories/2/' #put the public user interface URL here. It should include the specific repository and end with a / (ex. test.edu/repositories/2/)
+# ArchivesSpace
+aspace_user = ''  # ArchivesSpace username
+aspace_pass = ''  # ArchivesSpace password
+aspace_repo = '2' # ArchivesSpace repository ID
+aspace_host = ''  # API host URL (no trailing slash)
 
-#AWS/CloudFront 
-aws_access_key = ''
-aws_secret_key = ''
-aws_bucket = ''
+# AWS / CloudFront 
+aws_access = ''   # AWS Access Key ID
+aws_secret = ''   # AWS Secret Access Key
+aws_bucket = ''   # S3 Bucket Name
+aws_region = ''   # AWS Region (e.g., 'us-east-1')
 base_s3_path = ''
-aws_region = ''
 cloudfront_base_URI = ''
-preservation_aws_bucket= ''
 
-#input directory
+# Input & Execution Settings
 input_directory = ''
-
 dry_run = True
 
 config = {
@@ -24,14 +21,12 @@ config = {
     'aspace_pass': aspace_pass,
     'aspace_repo': aspace_repo,
     'aspace_host': aspace_host,
-    'aspace_pui': aspace_pui,
-    'aws_access': aws_access_key,
-    'aws_secret': aws_secret_key,
-    'base_s3_path': base_s3_path,
+    'aws_access': aws_access,
+    'aws_secret': aws_secret,
     'aws_bucket': aws_bucket,
-    'preservation_aws_bucket': preservation_aws_bucket,
     'aws_region': aws_region,
+    'base_s3_path': base_s3_path,
     'cloudfront_base_URI': cloudfront_base_URI,
-    'input_directory':input_directory,
+    'input_directory': input_directory,
     'dry_run': dry_run
 }
