@@ -34,7 +34,7 @@ root_folder/
 
 - -r, --refid: Name of a specific folder/ref_id inside your input directory to process a single package instead of running batch mode.
 - -b, --born-digital: Sets bag profile/origin to born-digital and triggers ArchivesSpace extent and scope note updates.
-- -a, --accession: Optional accession number string (e.g., 2026-023). Appends Accession-Number to bag-info.txt and notes.
+- -a, --accession: Optional accession number string (e.g., 2026-023). Appends Accession-Number to bag-info.txt.
 
 
 # Example Uses
