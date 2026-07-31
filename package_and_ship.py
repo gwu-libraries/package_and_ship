@@ -106,7 +106,7 @@ def analyze_bag_contents(bag_dir: Path):
     return total_files, extent_number, extent_type, file_list_html
 
 
-def update_ao_born_digital_metadata(obj_uri: str, ao_record: dict, bag_dir: Path, accession: str = None):
+def update_ao_born_digital_metadata(obj_uri: str, ao_record: dict, bag_dir: Path):
     """Appends extent data, scope & content note, and optional accession info to the AO in ArchivesSpace."""
     total_files, extent_number, extent_type, file_list_html = analyze_bag_contents(bag_dir)
 
@@ -123,7 +123,7 @@ def update_ao_born_digital_metadata(obj_uri: str, ao_record: dict, bag_dir: Path
     # 2. Append Scope and Content Note using HTML formatting tags (<p>, <b>)
     notes = ao_record.setdefault("notes", [])
     
-    note_title = f"Born-Digital File Inventory (Accession {accession})" if accession else "Born-Digital File Inventory"
+    note_title = "Born-Digital File Inventory"
 
     note_body = (
         f"<p><b>Digital File List:</b></p>"
