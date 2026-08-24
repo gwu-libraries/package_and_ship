@@ -60,27 +60,6 @@ s3_client = boto3.client(
 # ------------------------------------------------------------------------------
 
 def analyze_bag_contents(bag_dir: Path):
-    """Calculates file count, total size, and generates a formatted file list string."""
-    data_dir = bag_dir / "data" if (bag_dir / "data").exists() else bag_dir
-    files = [f for f in data_dir.rglob('*') if f.is_file() and not f.name.startswith('.')]
-
-    total_bytes = sum(f.stat().st_size for f in files)
-    total_files = len(files)
-
-    # Format human-readable size
-    if total_bytes >= 1024 ** 3:
-        formatted_size = f"{total_bytes / (1024 ** 3):.2f} GB"
-    else:
-        formatted_size = f"{total_bytes / (1024 ** 2):.2f} MB"
-
-    # Build relative file path inventory
-    file_list = [f.relative_to(data_dir).as_posix() for f in files]
-    file_list_text = "\n".join(sorted(file_list))
-
-    return total_files, formatted_size, file_list_text
-
-
-def analyze_bag_contents(bag_dir: Path):
     """Calculates file count, formatted extent size details, and generates an HTML-tagged file list string."""
     data_dir = bag_dir / "data" if (bag_dir / "data").exists() else bag_dir
     files = [f for f in data_dir.rglob('*') if f.is_file() and not f.name.startswith('.')]
@@ -106,7 +85,7 @@ def analyze_bag_contents(bag_dir: Path):
     return total_files, extent_number, extent_type, file_list_html
 
 
-def update_ao_born_digital_metadata(obj_uri: str, ao_record: dict, bag_dir: Path):
+def update_ao_born_digital_metadata(obj_uri: str, ao_record: dict, bag_dir: Path, accession: str = None):
     """Appends extent data, scope & content note, and optional accession info to the AO in ArchivesSpace."""
     total_files, extent_number, extent_type, file_list_html = analyze_bag_contents(bag_dir)
 
@@ -124,6 +103,8 @@ def update_ao_born_digital_metadata(obj_uri: str, ao_record: dict, bag_dir: Path
     notes = ao_record.setdefault("notes", [])
     
     note_title = "Born-Digital File Inventory"
+    if accession:
+        note_title += f" (Accession {accession})"
 
     note_body = (
         f"<p><b>Digital File List:</b></p>"
@@ -144,16 +125,6 @@ def update_ao_born_digital_metadata(obj_uri: str, ao_record: dict, bag_dir: Path
         ]
     }
     notes.append(file_list_note)
-
-    # 3. Post Updated AO Record
-    try:
-        response = as_client.post(obj_uri, json=ao_record)
-        if response.status_code == 200:
-            logging.info(f"Successfully updated AO metadata and scope note for {obj_uri}")
-        else:
-            logging.error(f"Failed to update AO metadata for {obj_uri}: {response.text}")
-    except Exception as e:
-        logging.error(f"Error posting updated AO record for {obj_uri}: {e}")
 
     # 3. Post Updated AO Record
     try:
@@ -421,6 +392,7 @@ def create_bag_and_upload(bag_dir: Path, dry_run=False, born_digital=False, acce
 
     return s3_key
 
+
 def parse_cli_args():
     """Parses command-line arguments for single-folder or batch processing."""
     parser = argparse.ArgumentParser(
@@ -437,11 +409,11 @@ def parse_cli_args():
         help="Set BagIt metadata Origin to 'born-digital', update profile identifier, and attach extent & file inventory notes to the AO."
     )
     parser.add_argument(
-    "-a", "--accession",
-    type=str,
-    default=None,
-    help="Optional accession number associated with the transfer (e.g., 2026-023)"
-)
+        "-a", "--accession",
+        type=str,
+        default=None,
+        help="Optional accession number associated with the transfer (e.g., 2026-023)"
+    )
     return parser.parse_args()
 
 
@@ -469,7 +441,8 @@ if __name__ == "__main__":
             s3_key = create_bag_and_upload(
                 bag_dir, 
                 dry_run=dry_run, 
-                born_digital=args.born_digital
+                born_digital=args.born_digital,
+                accession=args.accession
             )
 
             if s3_key and not dry_run:
