@@ -57,6 +57,6 @@ python package_and_ship.py -r ref_67890 -b -a 2026-023
 
 4. Run batch processing on all folders as born-digital with an accession number:
 ```
-python package_ship.py -b -a 2026-023
+python package_and_ship.py -b -a 2026-023
 ```
 
