@@ -1,5 +1,5 @@
 # Package and Ship
-Packages and ingests digitized material into dig-col storage.
+Packages and ingests digital collections materials into SCRC digcol storage. 
 
 * Bags content with relevant descrptive metadata retrieved via the ArchivesSpace API. 
 * Places the content in the relevant "collection" level directory in dig-col storage
@@ -30,36 +30,33 @@ root_folder/
         └── audio_file_1_caption_eng.vtt
  </pre>
 
- # Usage    
+ # CLI Options
 
- ## 1. Batch Processing
+- -r, --refid: Name of a specific folder/ref_id inside your input directory to process a single package instead of running batch mode.
+- -b, --born-digital: Sets bag profile/origin to born-digital and triggers ArchivesSpace extent and scope note updates.
+- -a, --accession: Optional accession number string (e.g., 2026-023). Appends Accession-Number to bag-info.txt.
 
- Scans the configured base directory and processes every valid object subfolder sequentially.
 
- ```
- python package_ship.py
- ```
+# Example Uses
 
- ## 2. Single Processing
- Processes just one specified folder.
+1. Run batch processing on all standard folders in input directory. Use for digitized content only.
+```
+python package_and_ship.py
+```
 
- ```
- python package_ship.py -r ref_id_001
- ```
+2. Process a single folder in input directory. Use for digitized content only.
+```
+python package_and_ship.py -r <ref_id>
+```
 
-# Example bag-info.txt
+3. Process a single born-digital package with an accession number:
 
-Ideally, this bag-info file should contain enough information to satisfy [DACS Requirements for Single-level Descriptions.](https://saa-ts-dacs.github.io/dacs/06_part_I/02_chapter_01.html) At present, the hierarchical nature of our descriptive data and minimally described records pose some challenge related to fulfilling this requirement. Missing data, like creator, languages, and rights information, could be inferred by working up the hierarchy. However, this would likely lead to inaccurate or misrepresented data.
+```
+python package_and_ship.py -r ref_67890 -b -a 2026-023
+```
 
-<pre>ArchivesSpace-URI: /repositories/2/archival_objects/582952
-Bag-Software-Agent: bagit.py v1.8.1 <https://github.com/LibraryOfCongress/bagit-python>
-BagIt-Profile-Identifier: scrc-digitization-profile.json
-Bagging-Date: 2025-01-28
-Collection-ID: ibt0084
-End-Date: 1962-12-31
-Origin: digitization
-Payload-Oxum: 4695087227.3
-Rights-ID: 
-Start-Date: 1962-01-01
-Title: Congress Speaks at the 19th Convention: Senator McGee
-</pre>
+4. Run batch processing on all folders as born-digital with an accession number:
+```
+python package_and_ship.py -b -a 2026-023
+```
+
