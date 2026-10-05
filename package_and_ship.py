@@ -62,7 +62,17 @@ s3_client = boto3.client(
 def analyze_bag_contents(bag_dir: Path):
     """Calculates file count, formatted extent size details, and generates an HTML-tagged file list string."""
     data_dir = bag_dir / "data" if (bag_dir / "data").exists() else bag_dir
-    files = [f for f in data_dir.rglob('*') if f.is_file() and not f.name.startswith('.')]
+    
+    # Exclude system files and BagIt manifest/tag files
+    ignored_names = {'bag-info.txt', 'bagit.txt'}
+    files = [
+        f for f in data_dir.rglob('*') 
+        if f.is_file() 
+        and not f.name.startswith('.') 
+        and not f.name.startswith('manifest-') 
+        and not f.name.startswith('tagmanifest-')
+        and f.name not in ignored_names
+    ]
 
     total_bytes = sum(f.stat().st_size for f in files)
     total_files = len(files)
