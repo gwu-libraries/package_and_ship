@@ -2,6 +2,7 @@ import argparse
 import base64
 import binascii
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 import bagit
@@ -59,6 +60,22 @@ s3_client = boto3.client(
 # Born-Digital & File Analysis Helpers
 # ------------------------------------------------------------------------------
 
+def parse_accession_folder(folder_name: str):
+    """
+    Parses accession folder names to extract base ID and optional sub-batch suffix.
+    Examples:
+        'acc_1736'        -> ('1736', 'sip_01')
+        'acc_1736_02'     -> ('1736', 'sip_02')
+        'acc_1736_batchB' -> ('1736', 'batchB')
+    """
+    match = re.match(r"^acc_(\d+)(?:_(.+))?$", folder_name)
+    if match:
+        acc_id = match.group(1)
+        sip_suffix = match.group(2) if match.group(2) else "sip_01"
+        return acc_id, sip_suffix
+    return None, None
+
+
 def analyze_bag_contents(bag_dir: Path):
     """Calculates file count, formatted extent size details, and generates an HTML-tagged file list string."""
     data_dir = bag_dir / "data" if (bag_dir / "data").exists() else bag_dir
@@ -88,7 +105,7 @@ def analyze_bag_contents(bag_dir: Path):
         extent_number = f"{total_bytes / 1024:.2f}"
         extent_type = "kilobyte(s)"
 
-    # Wrap each relative path in <p> tags so ArchivesSpace renders line breaks
+    # Wrap each relative path in <p> tags for AO records
     file_list = [f.relative_to(data_dir).as_posix() for f in files]
     file_list_html = "".join([f"<p>{path}</p>" for path in sorted(file_list)])
 
@@ -150,6 +167,34 @@ def update_ao_born_digital_metadata(obj_uri: str, ao_record: dict, bag_dir: Path
         return ao_record
 
 
+def update_accession_born_digital_metadata(acc_uri: str, acc_record: dict, bag_dir: Path, sip_id: str = "sip_01"):
+    """Appends extent summary data for a specific SIP transfer to an Accession record."""
+    total_files, extent_number, extent_type, _ = analyze_bag_contents(bag_dir)
+
+    # Appends new extent entry for this transfer
+    extents = acc_record.setdefault("extents", [])
+    extents.append({
+        "jsonmodel_type": "extent",
+        "portion": "part",
+        "number": extent_number,
+        "extent_type": extent_type,
+        "container_summary": f"Transfer ({sip_id}): {total_files} files"
+    })
+
+    try:
+        response = as_client.post(acc_uri, json=acc_record)
+        if response.status_code == 200:
+            logging.info(f"Updated Accession extent metadata for {acc_uri} [{sip_id}] ({total_files} files, {extent_number} {extent_type})")
+            return response.json()
+        else:
+            logging.error(f"Failed updating Accession at {acc_uri}: {response.text}")
+            return acc_record
+    except Exception as e:
+        logging.error(f"Error posting updated Accession record for {acc_uri}: {e}")
+        return acc_record
+
+
+# ------------------------------------------------------------------------------
 # ArchivesSpace & Date Helpers
 # ------------------------------------------------------------------------------
 
@@ -206,6 +251,19 @@ def get_ao_record_by_refid(refid):
     return uri, ao_record
 
 
+def get_accession_record_by_id(accession_id: str):
+    """Fetches the URI and JSON payload for an Accession using its database integer ID."""
+    repo_id = config['aspace_repo']
+    endpoint = f"repositories/{repo_id}/accessions/{accession_id}"
+    
+    response = as_client.get(endpoint)
+    if response.status_code == 200:
+        acc_record = response.json()
+        return acc_record['uri'], acc_record
+    else:
+        raise ValueError(f"Failed to fetch Accession ID {accession_id}: [{response.status_code}] {response.text}")
+
+
 def create_preservation_dao(file_uri, refid):
     """Creates a DAO record in ArchivesSpace and links it to the archival object."""
     obj_uri, ao_record = get_ao_record_by_refid(refid)
@@ -248,6 +306,41 @@ def create_preservation_dao(file_uri, refid):
         logging.error(f"Error creating or linking DAO for {refid}: {e}")
 
 
+def create_accession_dao(file_uri: str, accession_id: str, sip_id: str = "sip_01"):
+    """Creates a distinct Digital Object for each SIP linked to the parent Accession."""
+    acc_uri, acc_record = get_accession_record_by_id(accession_id)
+    dao_identifier = f"acc_{accession_id}_{sip_id}"
+
+    dao_payload = {
+        "jsonmodel_type": "digital_object",
+        "publish": True,
+        "title": f"{acc_record.get('title', 'Accession ' + accession_id)} ({sip_id.upper()})",
+        "digital_object_id": dao_identifier,
+        "file_versions": [{
+            "file_uri": file_uri,
+            "publish": False,
+            "use_statement": "access_staff"
+        }]
+    }
+
+    try:
+        dao_resp = as_client.post(f"repositories/{config['aspace_repo']}/digital_objects", json=dao_payload).json()
+        dao_ref = dao_resp["uri"]
+        logging.info(f"Created DAO for Accession {accession_id} [{sip_id}]: {dao_ref}")
+
+        instances = acc_record.setdefault("instances", [])
+        instances.append({
+            "instance_type": "digital_object", 
+            "digital_object": {"ref": dao_ref}
+        })
+        
+        as_client.post(acc_uri, json=acc_record)
+        logging.info(f"Linked DAO {dao_ref} ({dao_identifier}) to Accession {acc_uri}")
+    except Exception as e:
+        logging.error(f"Error creating or linking DAO for Accession {accession_id}: {e}")
+
+
+# ------------------------------------------------------------------------------
 # S3 & Integrity Helpers
 # ------------------------------------------------------------------------------
 
@@ -264,6 +357,23 @@ def load_bag_checksums(bag_dir: Path):
                         hex_hash, rel_path = parts
                         checksums[rel_path.strip().replace('\\', '/')] = hex_hash
     return checksums
+
+
+def construct_s3_key(folder_name: str, collection_id: str = None, accession_id: str = None, sip_id: str = None) -> str:
+    """
+    Constructs target S3 path prefix for uploads.
+    - Unprocessed accessions: 'accessions_unprocessed/{accession_id}/{sip_id}'
+    - Processed archival objects: '{base_s3_path}/{collection_id}/{ref_id}'
+    """
+    if folder_name.startswith("acc_"):
+        return f"accessions_unprocessed/{accession_id}/{sip_id}"
+    
+    base_prefix = config.get("base_s3_path", "").strip("/")
+    target_path = f"{collection_id}/{folder_name}"
+
+    if base_prefix:
+        return f"{base_prefix}/{target_path}"
+    return target_path
 
 
 def transfer_to_s3(bag_dir: Path, s3_key: str):
@@ -346,68 +456,112 @@ def construct_cloudfront_uri(s3_path):
     return f"{base_uri}inventory.html?folder={s3_path}"
 
 
-# Core exec pipeline
+# ------------------------------------------------------------------------------
+# Core Execution Pipeline
 # ------------------------------------------------------------------------------
 
 def create_bag_and_upload(bag_dir: Path, dry_run=False, born_digital=False, accession=None):
-    """Generates BagIt package, uploads contents to S3, updates AO notes/extents if born-digital, and creates DAO."""
+    """Generates BagIt package, uploads contents to S3, and updates ArchivesSpace metadata/DAOs."""
     if not bag_dir.exists() or not any(bag_dir.iterdir()):
         logging.error(f"Directory {bag_dir} is empty or missing.")
         stats["failed_bags"] += 1
         return None
 
-    refid = bag_dir.name
-    obj_uri, ao_record = get_ao_record_by_refid(refid)
-
-    # Dates
-    dates_array = find_closest_value(obj_uri, 'dates', as_client)
-    formatted_start, formatted_end = parse_aspace_dates(dates_array)
-
-    # Collection ID
-    res_ref = ao_record.get('resource', {}).get('ref', '')
-    collection_id = as_client.get(res_ref).json().get('id_0', '').lower() if res_ref else ''
-
-    # Metadata assembly
+    folder_name = bag_dir.name
     origin = 'born-digital' if born_digital else 'digitization'
     profile_id = 'scrc-born-digital-profile.json' if born_digital else 'scrc-digitization-profile.json'
 
-    metadata = {
-        'ArchivesSpace-URI': obj_uri,
-        'Start-Date': formatted_start,
-        'Title': ao_record.get('title'),
-        'End-Date': formatted_end,
-        'Origin': origin,
-        'Rights-ID': '',
-        'Collection-ID': collection_id,
-        'BagIt-Profile-Identifier': profile_id
-    }
+    # --------------------------------------------------------------------------
+    # Route 1: Unprocessed Accession Folder (prefix acc_)
+    # --------------------------------------------------------------------------
+    if folder_name.startswith("acc_"):
+        accession_id, sip_id = parse_accession_folder(folder_name)
+        if not accession_id:
+            logging.error(f"Could not parse accession ID from folder name: {folder_name}")
+            stats["failed_bags"] += 1
+            return None
 
-    # Add optional Accession-Number to bag-info metadata
-    if accession:
-        metadata['Accession-Number'] = accession
+        acc_uri, acc_record = get_accession_record_by_id(accession_id)
 
-    # Born-Digital ArchivesSpace updates
-    if born_digital and not dry_run:
-        logging.info(f"Updating Archival Object {refid} with born-digital extent and file inventory note...")
-        ao_record = update_ao_born_digital_metadata(obj_uri, ao_record, bag_dir, accession=accession)
+        metadata = {
+            'ArchivesSpace-URI': acc_uri,
+            'Title': f"{acc_record.get('title', 'Accession ' + accession_id)} ({sip_id.upper()})",
+            'Origin': origin,
+            'BagIt-Profile-Identifier': profile_id,
+            'SIP-Identifier': sip_id
+        }
+        if accession:
+            metadata['Accession-Number'] = accession
 
-    if dry_run:
-        logging.info(f"[Dry Run] Skipping Bag creation for {bag_dir}. Metadata: {metadata}")
+        if born_digital and not dry_run:
+            logging.info(f"Updating Accession {accession_id} with born-digital extent metadata for {sip_id}...")
+            acc_record = update_accession_born_digital_metadata(acc_uri, acc_record, bag_dir, sip_id=sip_id)
+
+        if dry_run:
+            logging.info(f"[Dry Run] Skipping Bag creation for Accession {folder_name}. Metadata: {metadata}")
+        else:
+            bagit.make_bag(str(bag_dir), metadata, checksum=['sha256'])
+            logging.info(f"Bag created for Accession {accession_id} [{sip_id}] (Origin: {origin}).")
+            stats["successful_bags"] += 1
+
+        s3_key = construct_s3_key(folder_name, accession_id=accession_id, sip_id=sip_id)
+
+        if dry_run:
+            logging.info(f"[Dry Run] Skipping S3 upload for {bag_dir}. S3 Key would be: {s3_key}")
+        else:
+            transfer_to_s3(bag_dir, s3_key)
+            file_uri = construct_cloudfront_uri(s3_key) if 'scrc-digcol' in config.get('aws_bucket', '') else s3_key
+            create_accession_dao(file_uri, accession_id, sip_id=sip_id)
+
+        return s3_key
+
+    # --------------------------------------------------------------------------
+    # Route 2: Archival Object Folder (standard ref_id)
+    # --------------------------------------------------------------------------
     else:
-        bagit.make_bag(str(bag_dir), metadata, checksum=['sha256'])
-        logging.info(f"Bag created from {bag_dir} (Origin: {origin}).")
-        stats["successful_bags"] += 1
+        refid = folder_name
+        obj_uri, ao_record = get_ao_record_by_refid(refid)
 
-    # S3 transfer
-    base_s3_path = config.get('base_s3_path', '')
-    s3_key = f"{base_s3_path}/{collection_id}/{refid}".strip('/')
+        dates_array = find_closest_value(obj_uri, 'dates', as_client)
+        formatted_start, formatted_end = parse_aspace_dates(dates_array)
 
-    if dry_run:
-        logging.info(f"[Dry Run] Skipping S3 upload for {bag_dir}. S3 Key would be: {s3_key}")
-    else:
-        transfer_to_s3(bag_dir, s3_key)
+        res_ref = ao_record.get('resource', {}).get('ref', '')
+        collection_id = as_client.get(res_ref).json().get('id_0', '').lower() if res_ref else ''
 
-    return s3_key
+        metadata = {
+            'ArchivesSpace-URI': obj_uri,
+            'Start-Date': formatted_start,
+            'Title': ao_record.get('title'),
+            'End-Date': formatted_end,
+            'Origin': origin,
+            'Rights-ID': '',
+            'Collection-ID': collection_id,
+            'BagIt-Profile-Identifier': profile_id
+        }
+        if accession:
+            metadata['Accession-Number'] = accession
+
+        if born_digital and not dry_run:
+            logging.info(f"Updating Archival Object {refid} with born-digital extent and file inventory note...")
+            ao_record = update_ao_born_digital_metadata(obj_uri, ao_record, bag_dir, accession=accession)
+
+        if dry_run:
+            logging.info(f"[Dry Run] Skipping Bag creation for {bag_dir}. Metadata: {metadata}")
+        else:
+            bagit.make_bag(str(bag_dir), metadata, checksum=['sha256'])
+            logging.info(f"Bag created from {bag_dir} (Origin: {origin}).")
+            stats["successful_bags"] += 1
+
+        s3_key = construct_s3_key(folder_name, collection_id=collection_id)
+
+        if dry_run:
+            logging.info(f"[Dry Run] Skipping S3 upload for {bag_dir}. S3 Key would be: {s3_key}")
+        else:
+            transfer_to_s3(bag_dir, s3_key)
+            file_uri = construct_cloudfront_uri(s3_key) if 'scrc-digcol' in config.get('aws_bucket', '') else s3_key
+            create_preservation_dao(file_uri, refid)
+
+        return s3_key
 
 
 def parse_cli_args():
@@ -418,18 +572,18 @@ def parse_cli_args():
     parser.add_argument(
         '-r', '--refid', 
         type=str, 
-        help="Target a single ref_id folder to process instead of running batch mode."
+        help="Target a single folder name (e.g. 'scrc_ref_001', 'acc_1736', 'acc_1736_02') to process instead of batch mode."
     )
     parser.add_argument(
         '-b', '--born-digital',
         action='store_true',
-        help="Set BagIt metadata Origin to 'born-digital', update profile identifier, and attach extent & file inventory notes to the AO."
+        help="Set BagIt metadata Origin to 'born-digital', update profile identifier, and attach extent details."
     )
     parser.add_argument(
         "-a", "--accession",
         type=str,
         default=None,
-        help="Optional accession number associated with the transfer (e.g., 2026-023)"
+        help="Optional accession number string associated with the transfer (e.g., 2026-023)"
     )
     return parser.parse_args()
 
@@ -442,38 +596,30 @@ if __name__ == "__main__":
     if args.refid:
         target_path = input_directory / args.refid
         if target_path.exists() and target_path.is_dir():
-            logging.info(f"Targeted execution: Processing single ref_id '{args.refid}'")
-            refids = [args.refid]
+            logging.info(f"Targeted execution: Processing single folder '{args.refid}'")
+            folders = [args.refid]
         else:
-            logging.error(f"Directory for ref_id '{args.refid}' does not exist at {target_path}")
-            refids = []
+            logging.error(f"Directory '{args.refid}' does not exist at {target_path}")
+            folders = []
     else:
         logging.info("Batch execution: Processing all directories in input_directory.")
-        refids = [d.name for d in input_directory.iterdir() if d.is_dir()]
+        folders = [d.name for d in input_directory.iterdir() if d.is_dir()]
 
-    for refid in refids:
+    for folder_name in folders:
         try:
-            logging.info(f"Starting pipeline execution for ref_id: {refid}")
-            bag_dir = input_directory / refid
+            logging.info(f"Starting pipeline execution for folder: {folder_name}")
+            bag_dir = input_directory / folder_name
             s3_key = create_bag_and_upload(
                 bag_dir, 
                 dry_run=dry_run, 
                 born_digital=args.born_digital,
                 accession=args.accession
             )
-
-            if s3_key and not dry_run:
-                aws_bucket = config.get('aws_bucket', '')
-                if 'scrc-digcol' in aws_bucket:
-                    file_uri = construct_cloudfront_uri(s3_key)
-                else:
-                    file_uri = s3_key
-                create_preservation_dao(file_uri, refid)
-            elif dry_run:
-                logging.info(f"[Dry Run] Skipping DAO creation for {refid}.")
+            if dry_run:
+                logging.info(f"[Dry Run] Completed dry-run checks for {folder_name}.")
 
         except Exception as e:
-            logging.error(f"Failed processing ref_id {refid}: {e}")
+            logging.error(f"Failed processing folder {folder_name}: {e}")
 
     # Summary reporting
     logging.info("========================================")
