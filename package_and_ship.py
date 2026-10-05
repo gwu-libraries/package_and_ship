@@ -141,10 +141,13 @@ def update_ao_born_digital_metadata(obj_uri: str, ao_record: dict, bag_dir: Path
         response = as_client.post(obj_uri, json=ao_record)
         if response.status_code == 200:
             logging.info(f"Successfully updated AO metadata and file list note for {obj_uri}")
+            return response.json()
         else:
             logging.error(f"Failed to update AO metadata for {obj_uri}: {response.text}")
+            return ao_record
     except Exception as e:
         logging.error(f"Error posting updated AO record for {obj_uri}: {e}")
+        return ao_record
 
 
 # ArchivesSpace & Date Helpers
@@ -386,7 +389,7 @@ def create_bag_and_upload(bag_dir: Path, dry_run=False, born_digital=False, acce
     # Born-Digital ArchivesSpace updates
     if born_digital and not dry_run:
         logging.info(f"Updating Archival Object {refid} with born-digital extent and file inventory note...")
-        update_ao_born_digital_metadata(obj_uri, ao_record, bag_dir, accession=accession)
+        ao_record = update_ao_born_digital_metadata(obj_uri, ao_record, bag_dir, accession=accession)
 
     if dry_run:
         logging.info(f"[Dry Run] Skipping Bag creation for {bag_dir}. Metadata: {metadata}")
