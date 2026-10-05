@@ -152,10 +152,14 @@ def update_ao_born_digital_metadata(obj_uri: str, ao_record: dict, bag_dir: Path
 
 def parse_aspace_dates(dates_array):
     """Extracts and formats date ranges from an ArchivesSpace date array."""
+    if not dates_array:
+        logging.warning("No date array provided. Using default date range: 1900-01-01 to 9999-12-31.")
+        return '1900-01-01', '9999-12-31'
+
     starts, ends = [], []
     for d in dates_array:
         begin = d.get('begin')
-        if not begin or begin.lower() == 'undated':
+        if not begin or str(begin).lower() == 'undated':
             continue
         starts.append(begin)
         
