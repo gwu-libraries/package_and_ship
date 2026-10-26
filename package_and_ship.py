@@ -510,7 +510,7 @@ def create_bag_and_upload(bag_dir: Path, dry_run=False, born_digital=False, acce
             logging.info(f"[Dry Run] Skipping S3 upload for {bag_dir}. S3 Key would be: {s3_key}")
         else:
             transfer_to_s3(bag_dir, s3_key)
-            file_uri = construct_cloudfront_uri(s3_key) if 'scrc-digcol' in config.get('aws_bucket', '') else s3_key
+            file_uri = s3_key
             create_accession_dao(file_uri, accession_id, sip_id=sip_id)
 
         return s3_key
