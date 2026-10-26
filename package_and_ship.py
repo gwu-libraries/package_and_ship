@@ -21,7 +21,7 @@ log_dir.mkdir(parents=True, exist_ok=True)
 current_time = datetime.now().strftime("%Y-%m-%d_%H-%M")
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
+    format="%(asctime)s %(levelname)s %(message)s",
     handlers=[
         logging.FileHandler(log_dir / f"package_ship_{current_time}.log", mode='a'),
         logging.StreamHandler()
